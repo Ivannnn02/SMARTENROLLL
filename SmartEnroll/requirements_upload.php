@@ -1,5 +1,8 @@
 <?php
-session_start();
+require_once __DIR__ . '/auth.php';
+
+smartenroll_auth_start_session();
+smartenroll_require_role('finance');
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
 $students = [];
@@ -7,11 +10,30 @@ $error = '';
 $successMessage = $_SESSION['requirements_success'] ?? '';
 unset($_SESSION['requirements_success']);
 $search = trim((string)($_GET['q'] ?? ''));
+$requirementFilter = trim((string)($_GET['requirement_filter'] ?? 'all'));
+$isPrintMode = (string)($_GET['print'] ?? '') === '1';
 $page = max(1, (int)($_GET['page'] ?? 1));
 $perPage = 10;
 $totalStudents = 0;
 $filteredStudents = 0;
 $totalPages = 1;
+$requirementLabels = [
+    'picture_2x2' => '2x2 Picture',
+    'birth_certificate' => 'Birth Certificate',
+    'medical_certificate' => 'Medical Certificate',
+];
+$requirementFilterOptions = [
+    'all' => 'All Students',
+    'picture_2x2' => '2x2 Picture',
+    'birth_certificate' => 'Birth Certificate',
+    'medical_certificate' => 'Medical Certificate',
+    'complete' => 'All Requirements',
+    'none' => 'No Requirements Yet',
+];
+
+if (!isset($requirementFilterOptions[$requirementFilter])) {
+    $requirementFilter = 'all';
+}
 
 function format_name(array $row): string
 {
@@ -25,19 +47,99 @@ function format_name(array $row): string
     return trim(preg_replace('/\s+/', ' ', $full), ' ,');
 }
 
+function ensure_requirements_table(mysqli $conn): void
+{
+    $conn->query(
+        "CREATE TABLE IF NOT EXISTS student_requirements (
+            id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            enrollment_id INT NOT NULL,
+            student_id VARCHAR(100) NOT NULL,
+            requirement_key VARCHAR(100) NOT NULL,
+            original_name VARCHAR(255) NOT NULL DEFAULT '',
+            stored_name VARCHAR(255) NOT NULL DEFAULT '',
+            file_path VARCHAR(255) NOT NULL DEFAULT '',
+            uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uniq_student_requirement (enrollment_id, requirement_key),
+            KEY idx_student_id (student_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+}
+
+function uploaded_requirement_labels(array $row, array $requirementLabels): array
+{
+    $keysRaw = trim((string)($row['uploaded_requirement_keys'] ?? ''));
+    if ($keysRaw === '') {
+        return [];
+    }
+
+    $labels = [];
+    foreach (explode(',', $keysRaw) as $key) {
+        $key = trim($key);
+        if ($key !== '' && isset($requirementLabels[$key])) {
+            $labels[] = $requirementLabels[$key];
+        }
+    }
+
+    return $labels;
+}
+
+function requirements_aggregate_sql(): string
+{
+    return "LEFT JOIN (
+            SELECT
+                enrollment_id,
+                GROUP_CONCAT(requirement_key ORDER BY requirement_key SEPARATOR ',') AS uploaded_requirement_keys,
+                MAX(CASE WHEN requirement_key = 'picture_2x2' THEN 1 ELSE 0 END) AS has_picture_2x2,
+                MAX(CASE WHEN requirement_key = 'birth_certificate' THEN 1 ELSE 0 END) AS has_birth_certificate,
+                MAX(CASE WHEN requirement_key = 'medical_certificate' THEN 1 ELSE 0 END) AS has_medical_certificate,
+                COUNT(DISTINCT requirement_key) AS requirement_count
+            FROM student_requirements
+            GROUP BY enrollment_id
+        ) requirement_summary ON requirement_summary.enrollment_id = enrollments.id";
+}
+
+function active_filter_label(string $requirementFilter, array $requirementFilterOptions): string
+{
+    return $requirementFilterOptions[$requirementFilter] ?? $requirementFilterOptions['all'];
+}
+
 try {
     $conn = new mysqli('127.0.0.1', 'root', '', 'smartenroll');
     $conn->set_charset('utf8mb4');
+    ensure_requirements_table($conn);
 
-    $searchSql = '';
-    $searchTypes = '';
-    $searchValues = [];
+    $whereClauses = [];
+    $queryTypes = '';
+    $queryValues = [];
+
     if ($search !== '') {
-        $searchSql = "WHERE student_id LIKE ? OR learner_lname LIKE ? OR learner_fname LIKE ? OR learner_mname LIKE ? OR grade_level LIKE ? OR school_year LIKE ?";
+        $whereClauses[] = "(enrollments.student_id LIKE ?
+            OR enrollments.learner_lname LIKE ?
+            OR enrollments.learner_fname LIKE ?
+            OR enrollments.learner_mname LIKE ?
+            OR enrollments.grade_level LIKE ?
+            OR enrollments.school_year LIKE ?
+            OR CONCAT_WS(' ', enrollments.learner_fname, enrollments.learner_mname, enrollments.learner_lname) LIKE ?
+            OR CONCAT_WS(', ', enrollments.learner_lname, CONCAT_WS(' ', enrollments.learner_fname, enrollments.learner_mname)) LIKE ?)";
         $likeSearch = '%' . $search . '%';
-        $searchTypes = 'ssssss';
-        $searchValues = [$likeSearch, $likeSearch, $likeSearch, $likeSearch, $likeSearch, $likeSearch];
+        $queryTypes .= 'ssssssss';
+        array_push($queryValues, $likeSearch, $likeSearch, $likeSearch, $likeSearch, $likeSearch, $likeSearch, $likeSearch, $likeSearch);
     }
+
+    if ($requirementFilter === 'picture_2x2') {
+        $whereClauses[] = 'COALESCE(requirement_summary.has_picture_2x2, 0) = 1';
+    } elseif ($requirementFilter === 'birth_certificate') {
+        $whereClauses[] = 'COALESCE(requirement_summary.has_birth_certificate, 0) = 1';
+    } elseif ($requirementFilter === 'medical_certificate') {
+        $whereClauses[] = 'COALESCE(requirement_summary.has_medical_certificate, 0) = 1';
+    } elseif ($requirementFilter === 'complete') {
+        $whereClauses[] = 'COALESCE(requirement_summary.requirement_count, 0) >= ' . count($requirementLabels);
+    } elseif ($requirementFilter === 'none') {
+        $whereClauses[] = 'COALESCE(requirement_summary.requirement_count, 0) = 0';
+    }
+
+    $whereSql = $whereClauses !== [] ? 'WHERE ' . implode(' AND ', $whereClauses) : '';
+    $aggregateJoinSql = requirements_aggregate_sql();
 
     $totalCountResult = $conn->query("SELECT COUNT(*) AS total FROM enrollments");
     $totalStudents = (int)(($totalCountResult->fetch_assoc()['total'] ?? 0));
@@ -45,10 +147,11 @@ try {
     $countStmt = $conn->prepare(
         "SELECT COUNT(*) AS total
          FROM enrollments
-         $searchSql"
+         $aggregateJoinSql
+         $whereSql"
     );
-    if ($searchValues) {
-        $countStmt->bind_param($searchTypes, ...$searchValues);
+    if ($queryValues) {
+        $countStmt->bind_param($queryTypes, ...$queryValues);
     }
     $countStmt->execute();
     $filteredStudents = (int)(($countStmt->get_result()->fetch_assoc()['total'] ?? 0));
@@ -60,16 +163,34 @@ try {
     }
     $offset = ($page - 1) * $perPage;
 
-    $studentStmt = $conn->prepare(
-        "SELECT id, student_id, learner_lname, learner_fname, learner_mname, grade_level, school_year
+    $studentSql = "SELECT
+            enrollments.id,
+            enrollments.student_id,
+            enrollments.learner_lname,
+            enrollments.learner_fname,
+            enrollments.learner_mname,
+            enrollments.grade_level,
+            enrollments.school_year,
+            requirement_summary.uploaded_requirement_keys
          FROM enrollments
-         $searchSql
-         ORDER BY learner_lname ASC, learner_fname ASC, id DESC
-         LIMIT ? OFFSET ?"
-    );
-    $queryTypes = $searchTypes . 'ii';
-    $queryValues = array_merge($searchValues, [$perPage, $offset]);
-    $studentStmt->bind_param($queryTypes, ...$queryValues);
+         $aggregateJoinSql
+         $whereSql
+         ORDER BY enrollments.learner_lname ASC, enrollments.learner_fname ASC, enrollments.id DESC";
+
+    $studentTypes = $queryTypes;
+    $studentValues = $queryValues;
+
+    if (!$isPrintMode) {
+        $studentSql .= " LIMIT ? OFFSET ?";
+        $studentTypes .= 'ii';
+        $studentValues[] = $perPage;
+        $studentValues[] = $offset;
+    }
+
+    $studentStmt = $conn->prepare($studentSql);
+    if ($studentValues) {
+        $studentStmt->bind_param($studentTypes, ...$studentValues);
+    }
     $studentStmt->execute();
     $result = $studentStmt->get_result();
     while ($row = $result->fetch_assoc()) {
@@ -118,6 +239,15 @@ try {
         </div>
     </section>
 
+    <?php if ($isPrintMode): ?>
+        <section class="requirements-print-summary">
+            <strong>Printed List</strong>
+            <span>Filter: <?php echo htmlspecialchars(active_filter_label($requirementFilter, $requirementFilterOptions)); ?></span>
+            <span>Search: <?php echo htmlspecialchars($search !== '' ? $search : 'All Students'); ?></span>
+            <span>Records: <?php echo $filteredStudents; ?></span>
+        </section>
+    <?php endif; ?>
+
     <?php if ($error): ?>
         <div class="requirements-alert error"><?php echo htmlspecialchars($error); ?></div>
     <?php endif; ?>
@@ -129,13 +259,40 @@ try {
         <div class="requirements-directory-head">
             <div>
                 <span class="eyebrow eyebrow-blue">Student Directory</span>
-                <h2>Choose A Student</h2>
-                <p>Open a student record to upload the 2x2 picture, birth certificate, and medical certificate.</p>
+                <h2><?php echo $isPrintMode ? 'Printable Requirements List' : 'Choose A Student'; ?></h2>
+                <p><?php echo $isPrintMode ? 'This view is ready to print based on the current search and requirement filter.' : 'Open a student record to upload the 2x2 picture, birth certificate, and medical certificate.'; ?></p>
             </div>
-            <form method="get" action="requirements_upload.php" class="requirements-search">
-                <i class="fa-solid fa-magnifying-glass"></i>
-                <input id="requirementsSearch" name="q" type="text" value="<?php echo htmlspecialchars($search); ?>" placeholder="Search student, ID, grade, or school year">
-            </form>
+            <?php if (!$isPrintMode): ?>
+                <div class="requirements-controls">
+                    <form method="get" action="requirements_upload.php" class="requirements-filters-form">
+                        <div class="requirements-search">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input id="requirementsSearch" name="q" type="text" value="<?php echo htmlspecialchars($search); ?>" placeholder="Search student, ID, grade, or school year">
+                        </div>
+                        <select name="requirement_filter" id="requirementsFilter" class="requirements-filter-select">
+                            <?php foreach ($requirementFilterOptions as $filterKey => $filterLabel): ?>
+                                <option value="<?php echo htmlspecialchars($filterKey); ?>" <?php echo $requirementFilter === $filterKey ? 'selected' : ''; ?>>
+                                    <?php echo htmlspecialchars($filterLabel); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                        <button type="submit" class="requirements-toolbar-btn">Apply Filter</button>
+                    </form>
+                    <a
+                        href="requirements_upload.php?<?php echo htmlspecialchars(http_build_query(array_filter([
+                            'q' => $search,
+                            'requirement_filter' => $requirementFilter,
+                            'print' => '1',
+                        ], static fn($value) => $value !== '' && $value !== null))); ?>"
+                        class="requirements-toolbar-btn requirements-toolbar-btn-print"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        <i class="fa-solid fa-print"></i>
+                        Print List
+                    </a>
+                </div>
+            <?php endif; ?>
         </div>
 
         <?php if (!$error && empty($students)): ?>
@@ -144,12 +301,24 @@ try {
             <div class="requirements-directory-table" id="requirementsStudentList">
                 <?php foreach ($students as $student): ?>
                     <?php $fullName = format_name($student) ?: 'N/A'; ?>
+                    <?php $uploadedRequirementLabels = uploaded_requirement_labels($student, $requirementLabels); ?>
                     <a
                         class="requirements-student-row"
                         href="requirements_upload_details.php?student_id=<?php echo urlencode((string)$student['student_id']); ?>"
                     >
                         <span class="student-row-id"><?php echo htmlspecialchars((string)($student['student_id'] ?? '')); ?></span>
                         <strong class="student-row-name"><?php echo htmlspecialchars($fullName); ?></strong>
+                        <span class="student-row-requirement-status <?php echo $uploadedRequirementLabels !== [] ? 'has-items' : 'is-empty'; ?>">
+                            <?php if ($uploadedRequirementLabels !== []): ?>
+                                <span class="student-row-requirement-tags">
+                                    <?php foreach ($uploadedRequirementLabels as $label): ?>
+                                        <span class="student-row-requirement-tag"><?php echo htmlspecialchars($label); ?></span>
+                                    <?php endforeach; ?>
+                                </span>
+                            <?php else: ?>
+                                <span class="student-row-requirement-empty">No requirements yet</span>
+                            <?php endif; ?>
+                        </span>
                         <span class="student-row-grade"><?php echo htmlspecialchars((string)($student['grade_level'] ?? 'N/A')); ?></span>
                         <span class="student-row-year"><?php echo htmlspecialchars((string)($student['school_year'] ?? 'N/A')); ?></span>
                         <span class="requirements-open-btn">View Record</span>
@@ -157,13 +326,13 @@ try {
                 <?php endforeach; ?>
             </div>
 
-            <?php if (!$error && $filteredStudents > 0): ?>
+            <?php if (!$error && $filteredStudents > 0 && !$isPrintMode): ?>
                 <div class="requirements-pagination">
                     <?php
                     $prevPage = max(1, $page - 1);
                     $nextPage = min($totalPages, $page + 1);
-                    $prevQuery = http_build_query(array_filter(['q' => $search, 'page' => $prevPage], static fn($value) => $value !== '' && $value !== null));
-                    $nextQuery = http_build_query(array_filter(['q' => $search, 'page' => $nextPage], static fn($value) => $value !== '' && $value !== null));
+                    $prevQuery = http_build_query(array_filter(['q' => $search, 'requirement_filter' => $requirementFilter, 'page' => $prevPage], static fn($value) => $value !== '' && $value !== null));
+                    $nextQuery = http_build_query(array_filter(['q' => $search, 'requirement_filter' => $requirementFilter, 'page' => $nextPage], static fn($value) => $value !== '' && $value !== null));
                     ?>
                     <a class="requirements-page-btn <?php echo $page <= 1 ? 'disabled' : ''; ?>" href="<?php echo $page <= 1 ? '#' : 'requirements_upload.php?' . $prevQuery; ?>">Prev</a>
                     <span class="requirements-page-status">Page <?php echo $page; ?> of <?php echo $totalPages; ?></span>

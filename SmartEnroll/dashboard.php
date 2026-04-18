@@ -3,7 +3,13 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/auth.php';
 
-$currentUser = smartenroll_require_login();
+$currentUser = smartenroll_require_role('finance');
+$profileFirstName = trim((string)($currentUser['full_name'] ?? 'User'));
+if ($profileFirstName !== '') {
+    $profileFirstNameParts = preg_split('/\s+/', $profileFirstName);
+    $profileFirstName = (string)($profileFirstNameParts[0] ?? $profileFirstName);
+}
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -28,17 +34,19 @@ $currentUser = smartenroll_require_login();
     </a>
     <div class="header-actions dashboard-profile-menu">
         <button type="button" class="dashboard-profile-link" id="dashboardProfileToggle" aria-label="Open profile menu" aria-expanded="false">
-            <i class="fa-solid fa-user"></i>
+            <span class="dashboard-profile-avatar"><i class="fa-solid fa-user"></i></span>
+            <span class="dashboard-profile-trigger-text"><?php echo htmlspecialchars($profileFirstName, ENT_QUOTES, 'UTF-8'); ?></span>
+            <i class="fa-solid fa-chevron-down dashboard-profile-chevron"></i>
         </button>
         <div class="dashboard-profile-dropdown" id="dashboardProfileDropdown">
             <div class="dashboard-profile-summary">
                 <span class="dashboard-profile-name"><?php echo htmlspecialchars($currentUser['full_name'], ENT_QUOTES, 'UTF-8'); ?></span>
-                <span class="dashboard-profile-role"><?php echo htmlspecialchars(ucfirst($currentUser['role']), ENT_QUOTES, 'UTF-8'); ?></span>
+                <span class="dashboard-profile-role">Finance</span>
                 <span class="dashboard-profile-email"><?php echo htmlspecialchars($currentUser['email'], ENT_QUOTES, 'UTF-8'); ?></span>
             </div>
             <a href="editable_enrollment_form.php" class="dashboard-profile-item">
                 <i class="fa-solid fa-clipboard-list"></i>
-                <span>Enrollment Form</span>
+                <span>Edit Enrollment Form</span>
             </a>
             <a href="dashboard.php" class="dashboard-profile-item">
                 <i class="fa-solid fa-id-badge"></i>
@@ -56,11 +64,7 @@ $currentUser = smartenroll_require_login();
     <div class="dashboard-header">
         <div>
             <h1>Welcome to SMARTENROLL</h1>
-            <p>Select a module to continue managing Adreo Montessori Inc. records.</p>
-            <p class="dashboard-user-meta">
-                Signed in as <?php echo htmlspecialchars($currentUser['full_name'], ENT_QUOTES, 'UTF-8'); ?>
-                (<?php echo htmlspecialchars(ucfirst($currentUser['role']), ENT_QUOTES, 'UTF-8'); ?>)
-            </p>
+            <p>Finance manages enrollment, requirements, billing, and receipts from this dashboard.</p>
         </div>
     </div>
 

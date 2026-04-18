@@ -99,7 +99,7 @@
     border-collapse: separate;
     border-spacing: 0 10px;
     width: 100%;
-    min-width: 860px;
+    min-width: 980px;
 }
 
 .tuition-table th {
@@ -182,6 +182,11 @@
     padding-left: 2px;
 }
 
+.tuition-table th:nth-child(5),
+.tuition-table td:nth-child(5) {
+    width: 160px;
+}
+
 .tuition-table th,
 .tuition-table td {
     padding: 16px 16px;
@@ -198,6 +203,33 @@
     font-weight: 600;
     color: var(--logo-blue);
     text-align: center;
+}
+
+.tuition-status-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    background: #eef2ff;
+    color: #334155;
+    border: 1px solid #c7d2fe;
+}
+
+.tuition-status-pill.fully-paid {
+    background: #ecfdf3;
+    color: #027a48;
+    border-color: #abefc6;
+}
+
+.tuition-status-pill.assessed,
+.tuition-status-pill.partial-payment,
+.tuition-status-pill.unassessed {
+    background: #fff7e6;
+    color: #b54708;
+    border-color: #fedf89;
 }
 
 @media (max-width: 1000px) {

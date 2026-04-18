@@ -37,19 +37,27 @@ function smartenroll_ensure_users_table(mysqli $conn): void
         "CREATE TABLE IF NOT EXISTS users (
             id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
             full_name VARCHAR(150) NOT NULL,
+            employee_id VARCHAR(100) NOT NULL,
             email VARCHAR(150) NOT NULL,
             password_hash VARCHAR(255) NOT NULL,
             role VARCHAR(20) NOT NULL,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uniq_users_employee_id (employee_id),
             UNIQUE KEY uniq_users_email (email),
             UNIQUE KEY uniq_users_role (role)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
     );
+
+    $employeeIdColumn = $conn->query("SHOW COLUMNS FROM users LIKE 'employee_id'");
+    if ($employeeIdColumn->num_rows === 0) {
+        $conn->query("ALTER TABLE users ADD COLUMN employee_id VARCHAR(100) NOT NULL DEFAULT '' AFTER full_name");
+        $conn->query("ALTER TABLE users ADD UNIQUE KEY uniq_users_employee_id (employee_id)");
+    }
 }
 
 function smartenroll_find_user_by_email(mysqli $conn, string $email): ?array
 {
-    $stmt = $conn->prepare('SELECT id, full_name, email, password_hash, role FROM users WHERE email = ? LIMIT 1');
+    $stmt = $conn->prepare('SELECT id, full_name, employee_id, email, password_hash, role FROM users WHERE email = ? LIMIT 1');
     $stmt->bind_param('s', $email);
     $stmt->execute();
     $result = $stmt->get_result();
@@ -59,10 +67,39 @@ function smartenroll_find_user_by_email(mysqli $conn, string $email): ?array
     return $user ?: null;
 }
 
+function smartenroll_normalize_role(string $role): string
+{
+    $normalized = strtolower(trim($role));
+    if (in_array($normalized, ['admin', 'registrar', 'finance'], true)) {
+        return 'finance';
+    }
+
+    return $normalized;
+}
+
 function smartenroll_find_user_by_role(mysqli $conn, string $role): ?array
 {
-    $stmt = $conn->prepare('SELECT id, full_name, email, role FROM users WHERE role = ? LIMIT 1');
-    $stmt->bind_param('s', $role);
+    $normalizedRole = smartenroll_normalize_role($role);
+
+    if ($normalizedRole === 'finance') {
+        $stmt = $conn->prepare("SELECT id, full_name, email, role FROM users WHERE LOWER(TRIM(role)) IN ('finance', 'admin', 'registrar') LIMIT 1");
+    } else {
+        $stmt = $conn->prepare('SELECT id, full_name, email, role FROM users WHERE role = ? LIMIT 1');
+        $stmt->bind_param('s', $role);
+    }
+
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $user = $result->fetch_assoc();
+    $stmt->close();
+
+    return $user ?: null;
+}
+
+function smartenroll_find_user_by_employee_id(mysqli $conn, string $employeeId): ?array
+{
+    $stmt = $conn->prepare('SELECT id, full_name, employee_id, email, role FROM users WHERE employee_id = ? LIMIT 1');
+    $stmt->bind_param('s', $employeeId);
     $stmt->execute();
     $result = $stmt->get_result();
     $user = $result->fetch_assoc();
@@ -75,11 +112,14 @@ function smartenroll_login_user(array $user): void
 {
     smartenroll_auth_start_session();
     session_regenerate_id(true);
+    $normalizedRole = smartenroll_normalize_role((string)($user['role'] ?? ''));
     $_SESSION['auth_user'] = [
         'id' => (int) $user['id'],
         'full_name' => $user['full_name'],
+        'employee_id' => $user['employee_id'] ?? '',
         'email' => $user['email'],
-        'role' => $user['role'],
+        'role' => $normalizedRole,
+        'raw_role' => $user['role'] ?? $normalizedRole,
     ];
 }
 
@@ -106,14 +146,14 @@ function smartenroll_require_login(): array
 function smartenroll_require_role(...$roles): array
 {
     $user = smartenroll_require_login();
-    $role = strtolower(trim((string)($user['role'] ?? '')));
+    $role = smartenroll_normalize_role((string)($user['role'] ?? ''));
 
     if (count($roles) === 1 && is_array($roles[0])) {
         $roles = $roles[0];
     }
 
     $normalizedAllowed = array_map(
-        static fn($item): string => strtolower(trim((string) $item)),
+        static fn($item): string => smartenroll_normalize_role((string) $item),
         $roles
     );
 

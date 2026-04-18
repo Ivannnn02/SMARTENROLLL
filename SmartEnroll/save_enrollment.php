@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/auth.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -18,6 +19,8 @@ function normalize_key(string $key): string
 }
 
 try {
+    smartenroll_require_role('finance');
+
     $conn = new mysqli('127.0.0.1', 'root', '', 'smartenroll');
     $conn->set_charset('utf8mb4');
 

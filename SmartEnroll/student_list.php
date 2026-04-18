@@ -3,8 +3,8 @@ require_once __DIR__ . '/auth.php';
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
-$currentUser = smartenroll_require_login();
-$isAdmin = (($currentUser['role'] ?? '') === 'admin');
+$currentUser = smartenroll_require_role('finance');
+$isFinance = (($currentUser['role'] ?? '') === 'finance');
 
 $rows = [];
 $error = '';
@@ -141,7 +141,7 @@ try {
                                         <a href="student_view.php?id=<?php echo urlencode((string)($row['id'] ?? '')); ?>" class="action-btn view" title="View">
                                             <i class="fa-solid fa-eye"></i>
                                         </a>
-                                        <?php if ($isAdmin): ?>
+                                        <?php if ($isFinance): ?>
                                             <a href="student_edit.php?id=<?php echo urlencode((string)($row['id'] ?? '')); ?>" class="action-btn edit" title="Edit Enrollment Form Details">
                                                 <i class="fa-solid fa-pen-to-square"></i>
                                             </a>
@@ -186,7 +186,7 @@ try {
     </div>
 </main>
 
-<?php if ($isAdmin): ?>
+<?php if ($isFinance): ?>
 <div class="modal-overlay" id="deleteModal">
   <div class="modal-box">
     <div class="modal-icon" id="deleteIconBox">

@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/mail/PHPMailer/mail_helper.php';
 
 smartenroll_auth_start_session();
 
@@ -22,13 +23,53 @@ $errorMessage = '';
 $successMessage = '';
 $loginEmailValue = '';
 $registerNameValue = '';
+$registerEmployeeIdValue = '';
 $registerEmailValue = '';
-$registerRoleValue = 'registrar';
+$registerVerificationCodeValue = '';
+$registerVerificationRequired = false;
 $loginCsrfToken = smartenroll_csrf_token('login_form');
 $registerCsrfToken = smartenroll_csrf_token('register_form');
 
+function smartenroll_registration_verification_state(): ?array
+{
+    $state = $_SESSION['register_verification'] ?? null;
+    return is_array($state) ? $state : null;
+}
+
+function smartenroll_clear_registration_verification(): void
+{
+    unset($_SESSION['register_verification']);
+}
+
+function smartenroll_send_registration_code(string $email, string $fullName, string $code, ?string &$error = null): bool
+{
+    $subject = 'SMARTENROLL Registration Verification Code';
+    $safeName = htmlspecialchars($fullName, ENT_QUOTES, 'UTF-8');
+    $safeCode = htmlspecialchars($code, ENT_QUOTES, 'UTF-8');
+    $html = <<<HTML
+        <div style="font-family:Poppins,Arial,sans-serif;color:#19325a;line-height:1.6;">
+            <h2 style="margin-bottom:8px;">SMARTENROLL Email Verification</h2>
+            <p>Hello {$safeName},</p>
+            <p>Your verification code is:</p>
+            <div style="display:inline-block;padding:12px 18px;background:#eef4ff;border-radius:12px;font-size:24px;font-weight:700;letter-spacing:4px;">{$safeCode}</div>
+            <p style="margin-top:16px;">This code will expire in 10 minutes.</p>
+        </div>
+        HTML;
+    $text = "Hello {$fullName}, your SMARTENROLL verification code is {$code}. This code will expire in 10 minutes.";
+
+    return smtp_send_mail($email, $subject, $html, $text, $error);
+}
+
 if (($_GET['status'] ?? '') === 'logged_out') {
     $successMessage = 'You have been logged out successfully.';
+}
+
+$pendingVerification = smartenroll_registration_verification_state();
+if ($pendingVerification !== null) {
+    $registerNameValue = (string)($pendingVerification['full_name'] ?? '');
+    $registerEmployeeIdValue = (string)($pendingVerification['employee_id'] ?? '');
+    $registerEmailValue = (string)($pendingVerification['email'] ?? '');
+    $registerVerificationRequired = true;
 }
 
 try {
@@ -74,20 +115,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $conn instanceof mysqli) {
         $activeTab = 'register';
         $csrfToken = trim((string)($_POST['csrf_token'] ?? ''));
         $registerNameValue = trim((string) ($_POST['full_name'] ?? ''));
+        $registerEmployeeIdValue = trim((string) ($_POST['employee_id'] ?? ''));
         $registerEmailValue = trim((string) ($_POST['register_email'] ?? ''));
-        $registerRoleValue = strtolower(trim((string) ($_POST['role'] ?? 'registrar')));
+        $registerRoleValue = 'finance';
         $password = (string) ($_POST['register_password'] ?? '');
         $confirmPassword = (string) ($_POST['confirm_password'] ?? '');
-        $allowedRoles = ['admin', 'registrar'];
 
         if (!smartenroll_verify_csrf($csrfToken, 'register_form')) {
             $errorMessage = 'Session verification failed. Please refresh and try again.';
-        } elseif ($registerNameValue === '' || $registerEmailValue === '' || $password === '' || $confirmPassword === '') {
+        } elseif ($registerNameValue === '' || $registerEmployeeIdValue === '' || $registerEmailValue === '' || $password === '' || $confirmPassword === '') {
             $errorMessage = 'Please complete all registration fields.';
         } elseif (!filter_var($registerEmailValue, FILTER_VALIDATE_EMAIL)) {
             $errorMessage = 'Please enter a valid email address for registration.';
-        } elseif (!in_array($registerRoleValue, $allowedRoles, true)) {
-            $errorMessage = 'Only admin and registrar accounts can be registered.';
+        } elseif (smartenroll_find_user_by_employee_id($conn, $registerEmployeeIdValue) !== null) {
+            $errorMessage = 'That Employee ID is already registered.';
         } elseif (strlen($password) < 6) {
             $errorMessage = 'Password must be at least 6 characters long.';
         } elseif ($password !== $confirmPassword) {
@@ -98,17 +139,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $conn instanceof mysqli) {
             $errorMessage = 'A unique ' . ucfirst($registerRoleValue) . ' account already exists.';
         } else {
             $passwordHash = password_hash($password, PASSWORD_DEFAULT);
-            $stmt = $conn->prepare('INSERT INTO users (full_name, email, password_hash, role) VALUES (?, ?, ?, ?)');
-            $stmt->bind_param('ssss', $registerNameValue, $registerEmailValue, $passwordHash, $registerRoleValue);
+            $verificationCode = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+            $mailError = '';
+
+            if (!smartenroll_send_registration_code($registerEmailValue, $registerNameValue, $verificationCode, $mailError)) {
+                $errorMessage = $mailError !== '' ? $mailError : 'Unable to send verification code right now.';
+            } else {
+                $_SESSION['register_verification'] = [
+                    'full_name' => $registerNameValue,
+                    'employee_id' => $registerEmployeeIdValue,
+                    'email' => $registerEmailValue,
+                    'password_hash' => $passwordHash,
+                    'role' => $registerRoleValue,
+                    'code' => $verificationCode,
+                    'expires_at' => time() + 600,
+                ];
+                $registerVerificationRequired = true;
+                $successMessage = 'We sent a verification code to your Gmail account. Enter it below to finish registration.';
+            }
+        }
+    }
+
+    if ($authAction === 'verify_register_code') {
+        $activeTab = 'register';
+        $csrfToken = trim((string)($_POST['csrf_token'] ?? ''));
+        $registerVerificationCodeValue = trim((string)($_POST['verification_code'] ?? ''));
+        $pendingVerification = smartenroll_registration_verification_state();
+        $registerVerificationRequired = true;
+
+        if ($pendingVerification !== null) {
+            $registerNameValue = (string)($pendingVerification['full_name'] ?? '');
+            $registerEmployeeIdValue = (string)($pendingVerification['employee_id'] ?? '');
+            $registerEmailValue = (string)($pendingVerification['email'] ?? '');
+        }
+
+        if (!smartenroll_verify_csrf($csrfToken, 'register_form')) {
+            $errorMessage = 'Session verification failed. Please refresh and try again.';
+        } elseif ($pendingVerification === null) {
+            $errorMessage = 'Your verification session has expired. Please register again.';
+            $registerVerificationRequired = false;
+        } elseif ($registerVerificationCodeValue === '') {
+            $errorMessage = 'Please enter the verification code sent to your email.';
+        } elseif (time() > (int)($pendingVerification['expires_at'] ?? 0)) {
+            smartenroll_clear_registration_verification();
+            $errorMessage = 'Your verification code has expired. Please register again.';
+            $registerVerificationRequired = false;
+        } elseif (!hash_equals((string)($pendingVerification['code'] ?? ''), $registerVerificationCodeValue)) {
+            $errorMessage = 'The verification code is incorrect.';
+        } elseif (smartenroll_find_user_by_employee_id($conn, (string)$pendingVerification['employee_id']) !== null) {
+            smartenroll_clear_registration_verification();
+            $errorMessage = 'That Employee ID is already registered.';
+            $registerVerificationRequired = false;
+        } elseif (smartenroll_find_user_by_email($conn, (string)$pendingVerification['email']) !== null) {
+            smartenroll_clear_registration_verification();
+            $errorMessage = 'That email is already registered.';
+            $registerVerificationRequired = false;
+        } elseif (smartenroll_find_user_by_role($conn, (string)$pendingVerification['role']) !== null) {
+            smartenroll_clear_registration_verification();
+            $errorMessage = 'A unique ' . ucfirst((string)$pendingVerification['role']) . ' account already exists.';
+            $registerVerificationRequired = false;
+        } else {
+            $stmt = $conn->prepare('INSERT INTO users (full_name, employee_id, email, password_hash, role) VALUES (?, ?, ?, ?, ?)');
+            $fullName = (string)$pendingVerification['full_name'];
+            $employeeId = (string)$pendingVerification['employee_id'];
+            $email = (string)$pendingVerification['email'];
+            $passwordHash = (string)$pendingVerification['password_hash'];
+            $role = (string)$pendingVerification['role'];
+            $stmt->bind_param('sssss', $fullName, $employeeId, $email, $passwordHash, $role);
             $stmt->execute();
             $stmt->close();
 
-            $successMessage = ucfirst($registerRoleValue) . ' account registered successfully. You can sign in now.';
+            smartenroll_clear_registration_verification();
+            $successMessage = ucfirst($role) . ' account registered successfully. You can sign in now.';
             $activeTab = 'login';
-            $loginEmailValue = $registerEmailValue;
+            $loginEmailValue = $email;
             $registerNameValue = '';
+            $registerEmployeeIdValue = '';
             $registerEmailValue = '';
-            $registerRoleValue = 'registrar';
+            $registerVerificationCodeValue = '';
+            $registerVerificationRequired = false;
         }
     }
 }
@@ -139,16 +248,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $conn instanceof mysqli) {
     <div class="login-panel">
         <div class="login-intro">
             <h1>Welcome to SMARTENROLL</h1>
-            <p>Your official platform for accessing enrollment records, academic resources, and collaboration tools.</p>
+                <p>Your official finance workspace for handling enrollment records, requirements, tuition, and receipts.</p>
             <p class="login-intro-sub">
-                Built for Adreo Montessori Inc. to keep admissions organized, accurate, and responsive.
+                Built for Adreo Montessori Inc. to keep the finance process organized, accurate, and easy to monitor.
             </p>
             <p class="login-intro-sub">
-                Sign in to manage applications, verify requirements, and guide families through each enrollment step.
+                Sign in to review requirements, confirm enrollment records, and manage billing from one place.
             </p>
             <div class="login-role-note">
                 <h3>Account rules</h3>
-                <p>Only one unique <strong>admin</strong> account and one unique <strong>registrar</strong> account can be registered.</p>
+                <p>Employee ID and email address must both be unique for the finance account.</p>
             </div>
         </div>
 
@@ -200,44 +309,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $conn instanceof mysqli) {
             </section>
 
             <section class="auth-panel <?php echo $activeTab === 'register' ? 'active' : ''; ?>" data-auth-panel="register">
-                <p class="login-subtitle login-subtitle-centered">Create a unique admin or registrar account.</p>
-                <form class="login-form" id="registerForm" action="login.php" method="post">
-                    <input type="hidden" name="auth_action" value="register">
-                    <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($registerCsrfToken, ENT_QUOTES, 'UTF-8'); ?>">
-                    <label>
-                        Full Name
-                        <input type="text" name="full_name" value="<?php echo htmlspecialchars($registerNameValue, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Enter full name" required>
-                    </label>
-                    <label>
-                        Role
-                        <select name="role" required>
-                            <option value="admin" <?php echo $registerRoleValue === 'admin' ? 'selected' : ''; ?>>Admin</option>
-                            <option value="registrar" <?php echo $registerRoleValue === 'registrar' ? 'selected' : ''; ?>>Registrar</option>
-                        </select>
-                    </label>
-                    <label>
-                        Email Address
-                        <input type="email" name="register_email" value="<?php echo htmlspecialchars($registerEmailValue, ENT_QUOTES, 'UTF-8'); ?>" placeholder="name@example.com" required>
-                    </label>
-                    <label>
-                        Password
-                        <div class="password-field">
-                            <input type="password" name="register_password" placeholder="At least 6 characters" required>
-                            <span class="password-icon"><i class="fa-solid fa-eye"></i></span>
+                <p class="login-subtitle login-subtitle-centered">Create the SMARTENROLL finance account.</p>
+                <?php if ($registerVerificationRequired): ?>
+                    <form class="login-form" id="registerVerifyForm" action="login.php" method="post">
+                        <input type="hidden" name="auth_action" value="verify_register_code">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($registerCsrfToken, ENT_QUOTES, 'UTF-8'); ?>">
+                        <label>
+                            Gmail Address
+                            <input type="email" value="<?php echo htmlspecialchars($registerEmailValue, ENT_QUOTES, 'UTF-8'); ?>" readonly>
+                        </label>
+                        <label>
+                            Verification Code
+                            <input type="text" name="verification_code" value="<?php echo htmlspecialchars($registerVerificationCodeValue, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Enter 6-digit code" inputmode="numeric" maxlength="6" required>
+                        </label>
+                        <button class="login-submit" type="submit">Verify Code</button>
+                        <div class="login-help">
+                            <p>Check your Gmail inbox for the confirmation code we sent.</p>
                         </div>
-                    </label>
-                    <label>
-                        Confirm Password
-                        <div class="password-field">
-                            <input type="password" name="confirm_password" placeholder="Re-enter password" required>
-                            <span class="password-icon"><i class="fa-solid fa-eye"></i></span>
+                    </form>
+                <?php else: ?>
+                    <form class="login-form" id="registerForm" action="login.php" method="post">
+                        <input type="hidden" name="auth_action" value="register">
+                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($registerCsrfToken, ENT_QUOTES, 'UTF-8'); ?>">
+                        <label>
+                            Full Name
+                            <input type="text" name="full_name" value="<?php echo htmlspecialchars($registerNameValue, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Enter full name" required>
+                        </label>
+                        <label>
+                            Employee ID
+                            <input type="text" name="employee_id" value="<?php echo htmlspecialchars($registerEmployeeIdValue, ENT_QUOTES, 'UTF-8'); ?>" placeholder="Enter Employee ID" required>
+                        </label>
+                        <label>
+                            Email Address
+                            <input type="email" name="register_email" value="<?php echo htmlspecialchars($registerEmailValue, ENT_QUOTES, 'UTF-8'); ?>" placeholder="name@example.com" required>
+                        </label>
+                        <label>
+                            Password
+                            <div class="password-field">
+                                <input type="password" name="register_password" placeholder="At least 6 characters" required>
+                                <span class="password-icon"><i class="fa-solid fa-eye"></i></span>
+                            </div>
+                        </label>
+                        <label>
+                            Confirm Password
+                            <div class="password-field">
+                                <input type="password" name="confirm_password" placeholder="Re-enter password" required>
+                                <span class="password-icon"><i class="fa-solid fa-eye"></i></span>
+                            </div>
+                        </label>
+                        <button class="login-submit" type="submit">Send Verification Code</button>
+                        <div class="login-help">
+                            <p>Use your official Employee ID and Gmail address to create an account.</p>
                         </div>
-                    </label>
-                    <button class="login-submit" type="submit">Create Account</button>
-                    <div class="login-help">
-                        <p>Each role is limited to one registered account only.</p>
-                    </div>
-                </form>
+                    </form>
+                <?php endif; ?>
             </section>
         </div>
     </div>

@@ -5,7 +5,7 @@ smartenroll_auth_start_session();
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 require_once __DIR__ . '/mail/PHPMailer/mail_helper.php';
 
-$currentUser = smartenroll_require_role(['admin', 'registrar']);
+$currentUser = smartenroll_require_role('finance');
 
 $student = null;
 $error = '';
@@ -104,6 +104,7 @@ try {
     if (!$student) {
         throw new RuntimeException('Student not found.');
     }
+
 } catch (Throwable $e) {
     $error = $e->getMessage();
 }

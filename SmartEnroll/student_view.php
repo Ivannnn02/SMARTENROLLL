@@ -1,13 +1,15 @@
-﻿<?php
+<?php
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/enrollment_fields.php';
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
-smartenroll_require_login();
+smartenroll_require_role('finance');
 
 $student = null;
 $columns = [];
 $error = '';
+$GLOBALS['smartenroll_custom_field_map'] = [];
 
 try {
     $conn = new mysqli('127.0.0.1', 'root', '', 'smartenroll');
@@ -33,43 +35,15 @@ try {
     if (!$student) {
         throw new RuntimeException('Student record not found.');
     }
+
+    $GLOBALS['smartenroll_custom_field_map'] = smartenroll_get_field_label_map($conn);
 } catch (Throwable $e) {
     $error = $e->getMessage();
 }
 
 function labelize(string $key): string
 {
-    $map = [
-        'learner_lname' => 'Learner Last Name',
-        'learner_fname' => 'Learner First Name',
-        'learner_mname' => 'Learner Middle Name',
-        'learner_ext' => 'Learner Extension Name',
-        'mother_maiden' => 'Mother Maiden Full Name',
-        'father_occ' => 'Father Occupation',
-        'mother_occ' => 'Mother Occupation',
-        'guardian_occ' => 'Guardian Occupation',
-        'guardian_contact' => 'Guardian Contact Number',
-        'father_contact' => 'Father Contact Number',
-        'mother_contact' => 'Mother Contact Number',
-        'emergency1_name' => 'Emergency 1 Name',
-        'emergency1_contact' => 'Emergency 1 Contact',
-        'emergency1_relationship' => 'Emergency 1 Relationship',
-        'emergency2_name' => 'Emergency 2 Name',
-        'emergency2_contact' => 'Emergency 2 Contact',
-        'emergency2_relationship' => 'Emergency 2 Relationship',
-        'emergency3_name' => 'Emergency 3 Name',
-        'emergency3_contact' => 'Emergency 3 Contact',
-        'emergency3_relationship' => 'Emergency 3 Relationship',
-        'dob' => 'Date of Birth',
-    ];
-
-    if (isset($map[$key])) {
-        return $map[$key];
-    }
-
-    $key = str_replace('_', ' ', $key);
-    $key = preg_replace('/\s+/', ' ', $key);
-    return ucwords(trim($key));
+    return smartenroll_field_labelize($key, $GLOBALS['smartenroll_custom_field_map'] ?? []);
 }
 ?>
 <!DOCTYPE html>
@@ -133,36 +107,7 @@ function labelize(string $key): string
                 </div>
             </div>
             <?php
-                $sectionMap = [
-                    'Enrollment Info' => [
-                        'student_id','grade_level','completion_date','school_year','created_at'
-                    ],
-                    'Learner Information' => [
-                        'learner_lname','learner_fname','learner_mname','learner_ext','nickname','sex','dob','age',
-                        'mother_tongue','religion','email'
-                    ],
-                    'Address Information' => [
-                        'province','municipality','barangay','street'
-                    ],
-                    'Father Information' => [
-                        'father_lname','father_fname','father_mname','father_occ','father_contact'
-                    ],
-                    'Mother Information' => [
-                        'mother_lname','mother_fname','mother_mname','mother_occ','mother_contact','mother_maiden'
-                    ],
-                    'Guardian Information' => [
-                        'guardian_type','guardian_lname','guardian_fname','guardian_mname','guardian_occ','guardian_contact'
-                    ],
-                    'Special Education Needs' => [
-                        'special_needs','medication','medication_details'
-                    ],
-                    'Emergency Contacts' => [
-                        'emergency1_name','emergency1_contact','emergency1_relationship',
-                        'emergency2_name','emergency2_contact','emergency2_relationship',
-                        'emergency3_name','emergency3_contact','emergency3_relationship'
-                    ],
-                ];
-
+                $sectionMap = smartenroll_build_sections($columns);
                 $skipCols = ['id'];
             ?>
 

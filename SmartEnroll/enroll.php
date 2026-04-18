@@ -2,8 +2,14 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/enrollment_form_config.php';
+require_once __DIR__ . '/enrollment_fields.php';
+require_once __DIR__ . '/auth.php';
+
+smartenroll_require_role('finance');
 
 $gradeLevels = smartenroll_get_grade_levels();
+$customFieldsBySection = smartenroll_custom_fields_by_section();
+$customFieldMap = smartenroll_get_field_label_map();
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -55,6 +61,32 @@ $gradeLevels = smartenroll_get_grade_levels();
 </div>
     </div>
 
+    <?php if (!empty($customFieldsBySection['Enrollment Info'])): ?>
+        <section class="form-section">
+            <h2>Enrollment Info</h2>
+            <div class="form-grid two">
+                <?php foreach ($customFieldsBySection['Enrollment Info'] as $field): ?>
+                    <?php $fieldKey = (string)$field['field_key']; ?>
+                    <div class="form-group">
+                        <label><?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?></label>
+                        <?php if (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'select'): ?>
+                            <select name="<?php echo htmlspecialchars($fieldKey); ?>">
+                                <option value="">Select</option>
+                                <?php foreach (smartenroll_custom_field_options($field) as $option): ?>
+                                    <option value="<?php echo htmlspecialchars($option); ?>"><?php echo htmlspecialchars($option); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php elseif (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'textarea'): ?>
+                            <textarea name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>"></textarea>
+                        <?php else: ?>
+                            <input type="<?php echo htmlspecialchars(smartenroll_input_type_for($fieldKey, $customFieldMap)); ?>" name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>">
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        </section>
+    <?php endif; ?>
+
 
 
         <!-- GRADE LEVEL -->
@@ -70,6 +102,30 @@ $gradeLevels = smartenroll_get_grade_levels();
                     </label>
                 <?php endforeach; ?>
             </div>
+
+            <?php if (!empty($customFieldsBySection['Grade Level'])): ?>
+                <?php $gradeLevelGridClass = count($customFieldsBySection['Grade Level']) === 1 ? 'one' : 'two'; ?>
+                <div class="form-grid <?php echo $gradeLevelGridClass; ?>">
+                    <?php foreach ($customFieldsBySection['Grade Level'] as $field): ?>
+                        <?php $fieldKey = (string)$field['field_key']; ?>
+                        <div class="form-group">
+                            <label><?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?></label>
+                            <?php if (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'select'): ?>
+                                <select name="<?php echo htmlspecialchars($fieldKey); ?>">
+                                    <option value="">Select</option>
+                                    <?php foreach (smartenroll_custom_field_options($field) as $option): ?>
+                                        <option value="<?php echo htmlspecialchars($option); ?>"><?php echo htmlspecialchars($option); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            <?php elseif (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'textarea'): ?>
+                                <textarea name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>"></textarea>
+                            <?php else: ?>
+                                <input type="<?php echo htmlspecialchars(smartenroll_input_type_for($fieldKey, $customFieldMap)); ?>" name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>">
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
         </section>
 
         <!-- LEARNER INFO -->
@@ -184,6 +240,29 @@ $gradeLevels = smartenroll_get_grade_levels();
                     <input type="email"placeholder="Email Address" name="email">
                 </div>
             </div>
+
+            <?php if (!empty($customFieldsBySection['Learner Information'])): ?>
+                <div class="form-grid two">
+                    <?php foreach ($customFieldsBySection['Learner Information'] as $field): ?>
+                        <?php $fieldKey = (string)$field['field_key']; ?>
+                        <div class="form-group">
+                            <label><?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?></label>
+                            <?php if (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'select'): ?>
+                                <select name="<?php echo htmlspecialchars($fieldKey); ?>">
+                                    <option value="">Select</option>
+                                    <?php foreach (smartenroll_custom_field_options($field) as $option): ?>
+                                        <option value="<?php echo htmlspecialchars($option); ?>"><?php echo htmlspecialchars($option); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            <?php elseif (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'textarea'): ?>
+                                <textarea name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>"></textarea>
+                            <?php else: ?>
+                                <input type="<?php echo htmlspecialchars(smartenroll_input_type_for($fieldKey, $customFieldMap)); ?>" name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>">
+                            <?php endif; ?>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
         </section>
     <!-- ADDRESS INFO -->
     <section class="form-section">
@@ -224,6 +303,29 @@ $gradeLevels = smartenroll_get_grade_levels();
                 <input type="text" name="street"placeholder="House No., Street Name">
             </div>
         </div>
+
+        <?php if (!empty($customFieldsBySection['Address Information'])): ?>
+            <div class="form-grid two">
+                <?php foreach ($customFieldsBySection['Address Information'] as $field): ?>
+                    <?php $fieldKey = (string)$field['field_key']; ?>
+                    <div class="form-group">
+                        <label><?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?></label>
+                        <?php if (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'select'): ?>
+                            <select name="<?php echo htmlspecialchars($fieldKey); ?>">
+                                <option value="">Select</option>
+                                <?php foreach (smartenroll_custom_field_options($field) as $option): ?>
+                                    <option value="<?php echo htmlspecialchars($option); ?>"><?php echo htmlspecialchars($option); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php elseif (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'textarea'): ?>
+                            <textarea name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>"></textarea>
+                        <?php else: ?>
+                            <input type="<?php echo htmlspecialchars(smartenroll_input_type_for($fieldKey, $customFieldMap)); ?>" name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>">
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
     </section>
     <!-- PARENT / GUARDIAN INFO -->
     <section class="form-section">
@@ -260,6 +362,29 @@ $gradeLevels = smartenroll_get_grade_levels();
                 <input type="text" name="father_contact"placeholder="Contact Number">
             </div>
         </div>
+
+        <?php if (!empty($customFieldsBySection['Father Information'])): ?>
+            <div class="form-grid two">
+                <?php foreach ($customFieldsBySection['Father Information'] as $field): ?>
+                    <?php $fieldKey = (string)$field['field_key']; ?>
+                    <div class="form-group">
+                        <label><?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?></label>
+                        <?php if (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'select'): ?>
+                            <select name="<?php echo htmlspecialchars($fieldKey); ?>">
+                                <option value="">Select</option>
+                                <?php foreach (smartenroll_custom_field_options($field) as $option): ?>
+                                    <option value="<?php echo htmlspecialchars($option); ?>"><?php echo htmlspecialchars($option); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php elseif (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'textarea'): ?>
+                            <textarea name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>"></textarea>
+                        <?php else: ?>
+                            <input type="<?php echo htmlspecialchars(smartenroll_input_type_for($fieldKey, $customFieldMap)); ?>" name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>">
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
 
         <!-- MOTHER -->
         <h2>Mother's Information</h2>
@@ -299,6 +424,29 @@ $gradeLevels = smartenroll_get_grade_levels();
                 <input type="text" name="mother_maiden"placeholder="Last Name, First Name, Middle Name">
             </div>
         </div>
+
+        <?php if (!empty($customFieldsBySection['Mother Information'])): ?>
+            <div class="form-grid two">
+                <?php foreach ($customFieldsBySection['Mother Information'] as $field): ?>
+                    <?php $fieldKey = (string)$field['field_key']; ?>
+                    <div class="form-group">
+                        <label><?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?></label>
+                        <?php if (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'select'): ?>
+                            <select name="<?php echo htmlspecialchars($fieldKey); ?>">
+                                <option value="">Select</option>
+                                <?php foreach (smartenroll_custom_field_options($field) as $option): ?>
+                                    <option value="<?php echo htmlspecialchars($option); ?>"><?php echo htmlspecialchars($option); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php elseif (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'textarea'): ?>
+                            <textarea name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>"></textarea>
+                        <?php else: ?>
+                            <input type="<?php echo htmlspecialchars(smartenroll_input_type_for($fieldKey, $customFieldMap)); ?>" name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>">
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
 
         <!-- GUARDIAN -->
         <h2>Guardian's Information</h2>
@@ -344,6 +492,29 @@ $gradeLevels = smartenroll_get_grade_levels();
                 <input type="text" name="guardian_contact" readonly>
             </div>
         </div>
+
+        <?php if (!empty($customFieldsBySection['Guardian Information'])): ?>
+            <div class="form-grid two">
+                <?php foreach ($customFieldsBySection['Guardian Information'] as $field): ?>
+                    <?php $fieldKey = (string)$field['field_key']; ?>
+                    <div class="form-group">
+                        <label><?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?></label>
+                        <?php if (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'select'): ?>
+                            <select name="<?php echo htmlspecialchars($fieldKey); ?>" data-guardian-field="<?php echo htmlspecialchars($fieldKey); ?>">
+                                <option value="">Select</option>
+                                <?php foreach (smartenroll_custom_field_options($field) as $option): ?>
+                                    <option value="<?php echo htmlspecialchars($option); ?>"><?php echo htmlspecialchars($option); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php elseif (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'textarea'): ?>
+                            <textarea name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>" data-guardian-field="<?php echo htmlspecialchars($fieldKey); ?>"></textarea>
+                        <?php else: ?>
+                            <input type="<?php echo htmlspecialchars(smartenroll_input_type_for($fieldKey, $customFieldMap)); ?>" name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>" data-guardian-field="<?php echo htmlspecialchars($fieldKey); ?>">
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
     </section>
     <!-- LEARNERS WITH SPECIAL EDUCATION NEEDS -->
     <section class="form-section">
@@ -385,13 +556,36 @@ $gradeLevels = smartenroll_get_grade_levels();
                 >
             </div>
         </div>
+
+        <?php if (!empty($customFieldsBySection['Special Education Needs'])): ?>
+            <div class="form-grid two">
+                <?php foreach ($customFieldsBySection['Special Education Needs'] as $field): ?>
+                    <?php $fieldKey = (string)$field['field_key']; ?>
+                    <div class="form-group">
+                        <label><?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?></label>
+                        <?php if (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'select'): ?>
+                            <select name="<?php echo htmlspecialchars($fieldKey); ?>">
+                                <option value="">Select</option>
+                                <?php foreach (smartenroll_custom_field_options($field) as $option): ?>
+                                    <option value="<?php echo htmlspecialchars($option); ?>"><?php echo htmlspecialchars($option); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php elseif (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'textarea'): ?>
+                            <textarea name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>"></textarea>
+                        <?php else: ?>
+                            <input type="<?php echo htmlspecialchars(smartenroll_input_type_for($fieldKey, $customFieldMap)); ?>" name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>">
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
     </section>
     <!-- IN CASE OF EMERGENCY -->
     <section class="form-section">
         <h2>E. In Case of Emergency (Call Order of Priority)</h2>
 
         <!-- 1st Priority -->
-        <div class="form-grid three">
+        <div class="form-grid three emergency-contact-block" data-emergency-block="1">
             <div class="form-group">
                 <label>1st: Parent/Guardian Name</label>
                 <input type="text" name="emergency1_name" placeholder="Full Name">
@@ -409,40 +603,67 @@ $gradeLevels = smartenroll_get_grade_levels();
         </div>
 
         <!-- 2nd Priority -->
-        <div class="form-grid three">
+        <div class="form-grid three emergency-contact-block emergency-contact-hidden" data-emergency-block="2">
             <div class="form-group">
                 <label>2nd: Parent/Guardian Name</label>
-                <input type="text" name="emergency2_name" placeholder="Full Name">
+                <input type="text" name="emergency2_name" placeholder="Full Name" disabled>
             </div>
 
             <div class="form-group">
                 <label>Contact No.</label>
-                <input type="tel" name="emergency2_contact" placeholder="09XXXXXXXXX">
+                <input type="tel" name="emergency2_contact" placeholder="09XXXXXXXXX" disabled>
             </div>
 
             <div class="form-group">
                 <label>Relationship</label>
-                <input type="text" name="emergency2_relationship"placeholder="e.g. Aunt, Uncle, Guardian">
+                <input type="text" name="emergency2_relationship"placeholder="e.g. Aunt, Uncle, Guardian" disabled>
             </div>
         </div>
 
         <!-- 3rd Priority -->
-        <div class="form-grid three">
+        <div class="form-grid three emergency-contact-block emergency-contact-hidden" data-emergency-block="3">
             <div class="form-group">
                 <label>3rd: Parent/Guardian Name</label>
-                <input type="text" name="emergency3_name" placeholder="Full Name">
+                <input type="text" name="emergency3_name" placeholder="Full Name" disabled>
             </div>
 
             <div class="form-group">
                 <label>Contact No.</label>
-                <input type="tel" name="emergency3_contact" placeholder="09XXXXXXXXX">
+                <input type="tel" name="emergency3_contact" placeholder="09XXXXXXXXX" disabled>
             </div>
 
             <div class="form-group">
                 <label>Relationship</label>
-                <input type="text" name="emergency3_relationship" placeholder="e.g. Relative, Caregiver">
+                <input type="text" name="emergency3_relationship" placeholder="e.g. Relative, Caregiver" disabled>
             </div>
         </div>
+
+        <div class="emergency-contact-actions">
+            <button type="button" class="emergency-add-btn" id="addEmergencyContactBtn">+ Add Emergency Contact</button>
+        </div>
+
+        <?php if (!empty($customFieldsBySection['Emergency Contacts'])): ?>
+            <div class="form-grid two">
+                <?php foreach ($customFieldsBySection['Emergency Contacts'] as $field): ?>
+                    <?php $fieldKey = (string)$field['field_key']; ?>
+                    <div class="form-group">
+                        <label><?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?></label>
+                        <?php if (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'select'): ?>
+                            <select name="<?php echo htmlspecialchars($fieldKey); ?>">
+                                <option value="">Select</option>
+                                <?php foreach (smartenroll_custom_field_options($field) as $option): ?>
+                                    <option value="<?php echo htmlspecialchars($option); ?>"><?php echo htmlspecialchars($option); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        <?php elseif (smartenroll_input_type_for($fieldKey, $customFieldMap) === 'textarea'): ?>
+                            <textarea name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>"></textarea>
+                        <?php else: ?>
+                            <input type="<?php echo htmlspecialchars(smartenroll_input_type_for($fieldKey, $customFieldMap)); ?>" name="<?php echo htmlspecialchars($fieldKey); ?>" placeholder="<?php echo htmlspecialchars(smartenroll_field_labelize($fieldKey, $customFieldMap)); ?>">
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
     </section>
     <!-- SUBMIT BUTTON -->
     <div class="form-submit-area">

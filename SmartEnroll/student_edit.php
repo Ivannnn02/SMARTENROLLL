@@ -3,159 +3,39 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/enrollment_form_config.php';
+require_once __DIR__ . '/enrollment_fields.php';
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
-smartenroll_require_role('admin');
+smartenroll_require_role('finance');
 
 function labelize(string $key): string
 {
-    $map = [
-        'student_id' => 'Student ID',
-        'school_year' => 'School Year',
-        'completion_date' => 'Completion Date',
-        'created_at' => 'Created At',
-        'learner_lname' => 'Learner Last Name',
-        'learner_fname' => 'Learner First Name',
-        'learner_mname' => 'Learner Middle Name',
-        'learner_ext' => 'Learner Extension Name',
-        'mother_maiden' => 'Mother Maiden Full Name',
-        'father_occ' => 'Father Occupation',
-        'mother_occ' => 'Mother Occupation',
-        'guardian_occ' => 'Guardian Occupation',
-        'guardian_contact' => 'Guardian Contact Number',
-        'father_contact' => 'Father Contact Number',
-        'mother_contact' => 'Mother Contact Number',
-        'emergency1_name' => 'Emergency 1 Name',
-        'emergency1_contact' => 'Emergency 1 Contact',
-        'emergency1_relationship' => 'Emergency 1 Relationship',
-        'emergency2_name' => 'Emergency 2 Name',
-        'emergency2_contact' => 'Emergency 2 Contact',
-        'emergency2_relationship' => 'Emergency 2 Relationship',
-        'emergency3_name' => 'Emergency 3 Name',
-        'emergency3_contact' => 'Emergency 3 Contact',
-        'emergency3_relationship' => 'Emergency 3 Relationship',
-        'dob' => 'Date of Birth',
-    ];
-
-    if (isset($map[$key])) {
-        return $map[$key];
-    }
-
-    $key = str_replace('_', ' ', $key);
-    $key = preg_replace('/\s+/', ' ', $key);
-    return ucwords(trim($key));
+    return smartenroll_field_labelize($key, $GLOBALS['smartenroll_custom_field_map'] ?? []);
 }
 
 function normalizeDateValue(string $value): string
 {
-    if ($value === '') {
-        return '';
-    }
-
-    $formats = ['Y-m-d', 'm/d/Y', 'd/m/Y'];
-    foreach ($formats as $format) {
-        $date = DateTime::createFromFormat($format, $value);
-        if ($date instanceof DateTime) {
-            return $date->format('Y-m-d');
-        }
-    }
-
-    $timestamp = strtotime($value);
-    return $timestamp !== false ? date('Y-m-d', $timestamp) : '';
+    return smartenroll_normalize_date_value($value);
 }
 
 function inputTypeFor(string $column): string
 {
-    if (in_array($column, ['completion_date', 'dob'], true)) {
-        return 'date';
-    }
-
-    if ($column === 'email') {
-        return 'email';
-    }
-
-    if ($column === 'age') {
-        return 'number';
-    }
-
-    if (str_contains($column, 'contact')) {
-        return 'tel';
-    }
-
-    return 'text';
+    return smartenroll_input_type_for($column, $GLOBALS['smartenroll_custom_field_map'] ?? []);
 }
 
 function ageFromDob(string $value): string
 {
-    $normalized = normalizeDateValue($value);
-    if ($normalized === '') {
-        return '';
-    }
-
-    $dob = DateTime::createFromFormat('Y-m-d', $normalized);
-    if (!($dob instanceof DateTime)) {
-        return '';
-    }
-
-    $today = new DateTime('today');
-    return (string)$today->diff($dob)->y;
+    return smartenroll_age_from_dob($value);
 }
 
 function studentEditSections(array $columns): array
 {
-    $sections = [
-        'Enrollment Info' => [
-            'student_id', 'grade_level', 'school_year', 'completion_date', 'created_at',
-        ],
-        'Learner Information' => [
-            'learner_lname', 'learner_fname', 'learner_mname', 'learner_ext', 'nickname', 'sex', 'dob', 'age',
-            'mother_tongue', 'religion', 'email',
-        ],
-        'Address Information' => [
-            'province', 'municipality', 'barangay', 'street',
-        ],
-        'Father Information' => [
-            'father_lname', 'father_fname', 'father_mname', 'father_occ', 'father_contact',
-        ],
-        'Mother Information' => [
-            'mother_lname', 'mother_fname', 'mother_mname', 'mother_occ', 'mother_contact', 'mother_maiden',
-        ],
-        'Guardian Information' => [
-            'guardian_type', 'guardian_lname', 'guardian_fname', 'guardian_mname', 'guardian_occ', 'guardian_contact',
-        ],
-        'Special Education Needs' => [
-            'special_needs', 'medication', 'medication_details',
-        ],
-        'Emergency Contacts' => [
-            'emergency1_name', 'emergency1_contact', 'emergency1_relationship',
-            'emergency2_name', 'emergency2_contact', 'emergency2_relationship',
-            'emergency3_name', 'emergency3_contact', 'emergency3_relationship',
-        ],
-    ];
-
-    $mapped = ['id'];
-    foreach ($sections as $fields) {
-        foreach ($fields as $field) {
-            $mapped[] = $field;
-        }
-    }
-
-    $extras = [];
-    foreach ($columns as $column) {
-        if (!in_array($column, $mapped, true)) {
-            $extras[] = $column;
-        }
-    }
-
-    if ($extras !== []) {
-        $sections['Other Saved Fields'] = $extras;
-    }
-
-    return $sections;
+    return smartenroll_build_sections($columns);
 }
 
 $gradeLevels = smartenroll_get_grade_levels();
+$GLOBALS['smartenroll_custom_field_map'] = smartenroll_get_field_label_map();
 
 $student = null;
 $columns = [];
@@ -306,12 +186,27 @@ try {
                     <div class="detail-section">
                         <h3 class="detail-section-title"><?php echo htmlspecialchars($sectionTitle); ?></h3>
                         <div class="student-edit-grid">
-                            <?php foreach ($fields as $col): ?>
+                                <?php foreach ($fields as $col): ?>
                                 <?php if (in_array($col, $skip, true)) { continue; } ?>
                                 <label class="edit-item">
                                     <span class="detail-label"><?php echo htmlspecialchars(labelize($col)); ?></span>
                                     <?php $val = (string)($student[$col] ?? ''); ?>
-                                    <?php if ($col === 'learner_ext'): ?>
+                                    <?php $customField = $GLOBALS['smartenroll_custom_field_map'][$col] ?? null; ?>
+                                    <?php if ($customField !== null && inputTypeFor($col) === 'select'): ?>
+                                        <select name="<?php echo htmlspecialchars($col); ?>">
+                                            <option value="">Select</option>
+                                            <?php foreach (smartenroll_custom_field_options($customField) as $option): ?>
+                                                <option value="<?php echo htmlspecialchars($option); ?>" <?php echo $val === $option ? 'selected' : ''; ?>>
+                                                    <?php echo htmlspecialchars($option); ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    <?php elseif ($customField !== null && inputTypeFor($col) === 'textarea'): ?>
+                                        <textarea
+                                            name="<?php echo htmlspecialchars($col); ?>"
+                                            rows="4"
+                                        ><?php echo htmlspecialchars($val); ?></textarea>
+                                    <?php elseif ($col === 'learner_ext'): ?>
                                         <select name="learner_ext">
                                             <?php
                                                 $extOptions = ['' => 'None', 'Jr' => 'Jr.', 'Sr' => 'Sr.', 'II' => 'II', 'III' => 'III'];

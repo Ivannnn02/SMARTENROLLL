@@ -18,6 +18,8 @@
         const summaryContent = document.getElementById("summaryContent");
         const confirmBtn = document.getElementById("confirmSubmit");
         const cancelBtn = document.getElementById("cancelSubmit");
+        const addEmergencyContactBtn = document.getElementById("addEmergencyContactBtn");
+        const emergencyBlocks = Array.from(document.querySelectorAll("[data-emergency-block]"));
 
         const form = document.getElementById("enrollmentForm");
         // ===============================
@@ -336,6 +338,39 @@
             });
         });
 
+        function setEmergencyBlockEnabled(block, enabled) {
+            block.querySelectorAll("input, select, textarea").forEach((field) => {
+                field.disabled = !enabled;
+            });
+        }
+
+        function updateEmergencyAddButton() {
+            if (!addEmergencyContactBtn) return;
+
+            const hiddenBlocks = emergencyBlocks.filter((block) => block.classList.contains("emergency-contact-hidden"));
+            addEmergencyContactBtn.disabled = hiddenBlocks.length === 0;
+            addEmergencyContactBtn.style.display = hiddenBlocks.length === 0 ? "none" : "inline-flex";
+        }
+
+        emergencyBlocks.forEach((block, index) => {
+            setEmergencyBlockEnabled(block, index === 0);
+        });
+        updateEmergencyAddButton();
+
+        if (addEmergencyContactBtn) {
+            addEmergencyContactBtn.addEventListener("click", () => {
+                const nextHiddenBlock = emergencyBlocks.find((block) => block.classList.contains("emergency-contact-hidden"));
+                if (!nextHiddenBlock) {
+                    updateEmergencyAddButton();
+                    return;
+                }
+
+                nextHiddenBlock.classList.remove("emergency-contact-hidden");
+                setEmergencyBlockEnabled(nextHiddenBlock, true);
+                updateEmergencyAddButton();
+            });
+        }
+
 
         // ======================================================
         // COMPLETION DATE AUTO TODAY
@@ -398,8 +433,14 @@
 
             document.querySelectorAll("input, select").forEach(el => {
 
-                // âœ… SKIP EXTENSION NAME ONLY
-                if (el.name === "learner_ext") return;
+                // Optional fields
+                if (
+                    el.name === "learner_ext" ||
+                    el.name === "learner_mname" ||
+                    el.name === "father_mname" ||
+                    el.name === "mother_mname" ||
+                    el.name === "guardian_mname"
+                ) return;
 
                 if (
                     el.disabled ||
@@ -666,7 +707,13 @@
 
         // 1ï¸âƒ£ Required fields
         document.querySelectorAll("input, select").forEach(el => {
-            if (el.name === "learner_ext") return;
+            if (
+                el.name === "learner_ext" ||
+                el.name === "learner_mname" ||
+                el.name === "father_mname" ||
+                el.name === "mother_mname" ||
+                el.name === "guardian_mname"
+            ) return;
             if (el.disabled || el.type === "hidden" || el.type === "radio" || el.readOnly) return;
 
             if (!el.value.trim()) {

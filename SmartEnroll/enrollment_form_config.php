@@ -102,6 +102,41 @@ function smartenroll_seed_grade_levels(mysqli $conn): void
     }
 
     $stmt->close();
+
+    smartenroll_restore_toddler_grade_level($conn);
+}
+
+function smartenroll_restore_toddler_grade_level(mysqli $conn): void
+{
+    $toddlerRow = null;
+    foreach (smartenroll_grade_level_defaults() as $row) {
+        if (((string)($row['grade_key'] ?? '')) === 'Toddler') {
+            $toddlerRow = $row;
+            break;
+        }
+    }
+
+    if ($toddlerRow === null) {
+        return;
+    }
+
+    $stmt = $conn->prepare(
+        "INSERT INTO enrollment_grade_levels (grade_key, grade_label, tuition_fee, sort_order, is_active)
+         VALUES (?, ?, ?, ?, 1)
+         ON DUPLICATE KEY UPDATE
+            grade_label = VALUES(grade_label),
+            tuition_fee = VALUES(tuition_fee),
+            sort_order = VALUES(sort_order),
+            is_active = 1"
+    );
+
+    $gradeKey = (string)$toddlerRow['grade_key'];
+    $gradeLabel = (string)$toddlerRow['grade_label'];
+    $tuitionFee = (float)$toddlerRow['tuition_fee'];
+    $sortOrder = (int)$toddlerRow['sort_order'];
+    $stmt->bind_param('ssdi', $gradeKey, $gradeLabel, $tuitionFee, $sortOrder);
+    $stmt->execute();
+    $stmt->close();
 }
 
 function smartenroll_get_grade_levels(?mysqli $conn = null): array
@@ -112,6 +147,7 @@ function smartenroll_get_grade_levels(?mysqli $conn = null): array
     try {
         smartenroll_ensure_grade_levels_table($db);
         smartenroll_seed_grade_levels($db);
+        smartenroll_restore_toddler_grade_level($db);
 
         $rows = [];
         $result = $db->query(
@@ -147,6 +183,7 @@ function smartenroll_save_grade_levels(array $rows, ?mysqli $conn = null): void
 
         $cleanRows = [];
         $seenKeys = [];
+        $seenLabels = [];
         $sortOrder = 10;
 
         foreach ($rows as $row) {
@@ -158,14 +195,24 @@ function smartenroll_save_grade_levels(array $rows, ?mysqli $conn = null): void
                 continue;
             }
 
-            if ($gradeKey === '' || $gradeLabel === '') {
-                throw new RuntimeException('Each grade level needs both a grade value and a display label.');
+            // If one field is blank, reuse the other so admins can add or rename grades faster.
+            if ($gradeKey === '' && $gradeLabel !== '') {
+                $gradeKey = $gradeLabel;
+            }
+
+            if ($gradeLabel === '' && $gradeKey !== '') {
+                $gradeLabel = $gradeKey;
             }
 
             if (isset($seenKeys[strtolower($gradeKey)])) {
                 throw new RuntimeException('Duplicate grade values are not allowed: ' . $gradeKey);
             }
             $seenKeys[strtolower($gradeKey)] = true;
+
+            if (isset($seenLabels[strtolower($gradeLabel)])) {
+                throw new RuntimeException('This grade level already exists: ' . $gradeLabel);
+            }
+            $seenLabels[strtolower($gradeLabel)] = true;
 
             $cleanRows[] = [
                 'grade_key' => $gradeKey,

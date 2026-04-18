@@ -3,7 +3,7 @@ require_once __DIR__ . '/auth.php';
 
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
-smartenroll_require_role('admin');
+smartenroll_require_role('finance');
 
 try {
     $conn = new mysqli('127.0.0.1', 'root', '', 'smartenroll');
