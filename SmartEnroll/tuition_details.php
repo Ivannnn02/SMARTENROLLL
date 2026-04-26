@@ -114,9 +114,9 @@ $schoolYear = $student['school_year'] ?? '';
 $completionDate = $student['completion_date'] ?? '';
 $gradeLevel = $student['grade_level'] ?? '';
 
-$tuitionMap = isset($conn) && $conn instanceof mysqli ? smartenroll_get_grade_tuition_map($conn) : smartenroll_get_grade_tuition_map();
-
-$totalTuition = array_key_exists($gradeLevel, $tuitionMap) ? (float)$tuitionMap[$gradeLevel] : 0.0;
+$totalTuition = isset($conn) && $conn instanceof mysqli
+    ? (smartenroll_resolve_grade_tuition_fee($gradeLevel, $conn) ?? 0.0)
+    : (smartenroll_resolve_grade_tuition_fee($gradeLevel) ?? 0.0);
 $amountPaid = 0.0;
 
 if ($student && isset($conn) && $conn instanceof mysqli) {

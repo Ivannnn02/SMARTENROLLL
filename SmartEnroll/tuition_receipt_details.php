@@ -17,9 +17,6 @@ $successMessage = $_SESSION['pay_tuition_success'] ?? '';
 $warningMessage = $_SESSION['pay_tuition_warning'] ?? '';
 unset($_SESSION['pay_tuition_success'], $_SESSION['pay_tuition_warning']);
 
-$tuitionMap = [];
-$gradeBreakdownMap = [];
-
 function format_name(array $row): string
 {
     $m = trim((string)($row['learner_mname'] ?? ''));
@@ -35,6 +32,38 @@ function format_name(array $row): string
 function format_money(float $amount): string
 {
     return 'PHP ' . number_format($amount, 2);
+}
+
+function format_invoice_money(float $amount): string
+{
+    return number_format($amount, 2);
+}
+
+function format_invoice_date(?string $dateValue): string
+{
+    $raw = trim((string)$dateValue);
+    if ($raw === '') {
+        return 'N/A';
+    }
+
+    $date = date_create($raw);
+    return $date ? $date->format('d M Y') : $raw;
+}
+
+function build_invoice_item_description(array $student, array $item): string
+{
+    $gradeLevel = strtoupper(trim((string)($student['grade_level'] ?? '')));
+    $label = strtoupper(trim((string)($item['label'] ?? $item['option'] ?? 'PAYMENT ITEM')));
+
+    if ($label === 'REGISTRATION FEE & MISCELLANEOUS') {
+        return 'REGISTRATION FEE';
+    }
+
+    if ($gradeLevel !== '' && ($label === 'TUITION FEE' || $label === 'MONTHLY PAYMENT')) {
+        return trim($gradeLevel . ' ' . $label);
+    }
+
+    return $label !== '' ? $label : 'PAYMENT ITEM';
 }
 
 function is_loopback_host(string $host): bool
@@ -104,6 +133,45 @@ function generate_payment_token(): string
     }
 }
 
+function generate_invoice_number_candidate(): string
+{
+    try {
+        $number = random_int(0, 9999);
+    } catch (Throwable $e) {
+        $number = (int)(microtime(true) * 10000) % 10000;
+    }
+
+    return 'INV-' . str_pad((string)$number, 4, '0', STR_PAD_LEFT);
+}
+
+function invoice_number_exists(mysqli $conn, string $invoiceNumber): bool
+{
+    $stmt = $conn->prepare(
+        "SELECT id
+         FROM tuition_payments
+         WHERE receipt_no = ?
+         LIMIT 1"
+    );
+    $stmt->bind_param('s', $invoiceNumber);
+    $stmt->execute();
+    $exists = $stmt->get_result()->fetch_assoc() !== null;
+    $stmt->close();
+
+    return $exists;
+}
+
+function generate_unique_invoice_number(mysqli $conn): string
+{
+    for ($attempt = 0; $attempt < 50; $attempt++) {
+        $candidate = generate_invoice_number_candidate();
+        if (!invoice_number_exists($conn, $candidate)) {
+            return $candidate;
+        }
+    }
+
+    return 'INV-' . str_pad((string)(((int)date('is')) % 10000), 4, '0', STR_PAD_LEFT);
+}
+
 function get_student(mysqli $conn, string $studentId): ?array
 {
     $stmt = $conn->prepare(
@@ -142,52 +210,7 @@ function get_school_year_paid_total(mysqli $conn, int $enrollmentId, string $sch
 
 function backfill_tuition_balances(mysqli $conn): int
 {
-    $rows = [];
-    $result = $conn->query(
-        "SELECT id, enrollment_id, COALESCE(school_year, '') AS school_year, tuition_fee, amount_paid, balance_after, payment_date
-         FROM tuition_payments
-         ORDER BY enrollment_id ASC, school_year ASC, payment_date ASC, id ASC"
-    );
-
-    if ($result) {
-        while ($row = $result->fetch_assoc()) {
-            $rows[] = $row;
-        }
-        $result->close();
-    }
-
-    if (empty($rows)) {
-        return 0;
-    }
-
-    $updated = 0;
-    $runningByGroup = [];
-    $updateStmt = $conn->prepare("UPDATE tuition_payments SET balance_after = ? WHERE id = ?");
-
-    foreach ($rows as $row) {
-        $enrollmentId = (int)($row['enrollment_id'] ?? 0);
-        $schoolYear = (string)($row['school_year'] ?? '');
-        $groupKey = $enrollmentId . '|' . $schoolYear;
-
-        if (!array_key_exists($groupKey, $runningByGroup)) {
-            $runningByGroup[$groupKey] = 0.0;
-        }
-
-        $runningByGroup[$groupKey] += (float)($row['amount_paid'] ?? 0);
-        $tuitionFee = round((float)($row['tuition_fee'] ?? 0), 2);
-        $computedBalance = max(0, round($tuitionFee - $runningByGroup[$groupKey], 2));
-        $storedBalance = round((float)($row['balance_after'] ?? 0), 2);
-
-        if (abs($computedBalance - $storedBalance) >= 0.01) {
-            $rowId = (int)($row['id'] ?? 0);
-            $updateStmt->bind_param('di', $computedBalance, $rowId);
-            $updateStmt->execute();
-            $updated++;
-        }
-    }
-
-    $updateStmt->close();
-    return $updated;
+    return smartenroll_sync_tuition_payment_totals($conn);
 }
 
 function get_paid_amounts_by_option(mysqli $conn, int $enrollmentId, string $schoolYear): array
@@ -398,6 +421,14 @@ function resolve_payment_balance_after(array $payment): float
     return max(0, round($tuitionFee - $amountPaid, 2));
 }
 
+function get_payment_cumulative_paid(array $payment): float
+{
+    $tuitionFee = round((float)($payment['tuition_fee'] ?? 0), 2);
+    $balanceAfter = resolve_payment_balance_after($payment);
+
+    return max(0, round($tuitionFee - $balanceAfter, 2));
+}
+
 function decode_saved_payment_items(?string $rawJson, float $amountPaid): array
 {
     $decoded = json_decode((string)$rawJson, true);
@@ -478,66 +509,121 @@ function send_receipt_email(array $student, array $payment): bool
     $receiptNo = trim((string)($payment['receipt_no'] ?? '')) !== '' ? (string)$payment['receipt_no'] : 'N/A';
     $items = decode_saved_payment_items((string)($payment['payment_items'] ?? ''), (float)($payment['amount_paid'] ?? 0));
     $remainingBalance = resolve_payment_balance_after($payment);
-    $subject = 'SMARTENROLL Tuition Breakdown - ' . ($student['student_id'] ?? '');
+    $invoiceAmount = round((float)($payment['amount_paid'] ?? 0), 2);
+    $invoiceAmountDisplay = number_format($invoiceAmount, 2);
+    $dueDateDisplay = format_invoice_date((string)($payment['payment_date'] ?? ''));
+    $paymentId = (int)($payment['id'] ?? 0);
+    $viewLink = $paymentId > 0
+        ? build_app_url('tuition_receipt_details.php', [
+            'student_id' => (string)($student['student_id'] ?? ''),
+            'payment_id' => (string)$paymentId,
+        ]) . '#receipt-preview'
+        : build_app_url('tuition_receipt_details.php', [
+            'student_id' => (string)($student['student_id'] ?? ''),
+        ]) . '#receipt-email-preview';
+    $embeddedImages = [];
+    $logoMarkup = '<div style="display:inline-block;font-family:Georgia,\'Times New Roman\',serif;font-size:28px;line-height:1;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#19325a;">SMARTENROLL</div>'
+        . '<div style="width:120px;height:3px;margin:10px auto 0;border-radius:999px;background:linear-gradient(90deg,#f6bf26 0%,#2d9cf0 100%);"></div>';
+    $logoPath = __DIR__ . '/assets/logo.png';
+    if (is_file($logoPath)) {
+        $logoCid = 'smartenroll-logo';
+        $embeddedImages[] = [
+            'path' => $logoPath,
+            'cid' => $logoCid,
+            'name' => 'Tuition Invoice',
+        ];
+        $logoMarkup = '<img src="cid:' . htmlspecialchars($logoCid) . '" alt="SMARTENROLL Logo" style="display:block;width:108px;height:auto;object-fit:contain;margin:0 auto;">';
+    }
+    $emailItemsHtml = '';
+    foreach ($items as $item) {
+        $itemLabel = build_invoice_item_description($student, $item);
+        $itemAmountDisplay = number_format((float)($item['amount'] ?? 0), 2);
+        $emailItemsHtml .= '<tr>'
+            . '<td style="padding:14px 0;border-bottom:1px solid #e5edf6;color:#22374f;font-size:15px;line-height:1.55;">' . htmlspecialchars($itemLabel) . '</td>'
+            . '<td style="padding:14px 0 14px 16px;border-bottom:1px solid #e5edf6;color:#22374f;font-size:15px;line-height:1.55;text-align:right;white-space:nowrap;">' . htmlspecialchars($itemAmountDisplay) . '</td>'
+            . '</tr>';
+    }
+
+    if ($emailItemsHtml === '') {
+        $emailItemsHtml = '<tr>'
+            . '<td style="padding:14px 0;border-bottom:1px solid #e5edf6;color:#667085;font-size:15px;line-height:1.55;">No billing item added.</td>'
+            . '<td style="padding:14px 0 14px 16px;border-bottom:1px solid #e5edf6;color:#22374f;font-size:15px;line-height:1.55;text-align:right;white-space:nowrap;">0.00</td>'
+            . '</tr>';
+    }
+
+    $subject = 'SMARTENROLL Tuition Invoice ' . $receiptNo . ' - ' . ($student['student_id'] ?? '');
     $html = '
     <html>
-    <body style="margin:0;padding:24px;background:#f5f7fb;font-family:Arial,sans-serif;color:#1f2937;">
-        <div style="max-width:720px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #e5e7eb;">
-            <div style="padding:24px 28px;background:linear-gradient(135deg,#19325a,#1e88e5);color:#ffffff;">
-                <h2 style="margin:0 0 8px;">Tuition Breakdown Receipt</h2>
-                <p style="margin:0;font-size:14px;opacity:.92;">This billing breakdown was sent to the email entered on the enrollment form.</p>
+    <body style="margin:0;padding:0;background:#ffffff;font-family:Arial,sans-serif;color:#22374f;">
+        <div style="max-width:920px;margin:0 auto;padding:36px 40px 48px;">
+            <div style="text-align:center;">
+                ' . $logoMarkup . '
+                <div style="margin-top:14px;font-size:30px;line-height:1.2;font-weight:600;color:#22374f;">Adreo Montessori Inc.</div>
+                <div style="margin-top:18px;font-size:56px;line-height:1;font-weight:700;color:#22374f;">&#8369;' . htmlspecialchars($invoiceAmountDisplay) . ' <span style="font-size:20px;font-weight:600;color:#344054;">PHP</span></div>
+                <div style="margin-top:16px;font-size:18px;font-weight:700;color:#22374f;">Due ' . htmlspecialchars($dueDateDisplay) . '</div>
+                <div style="margin-top:8px;font-size:16px;color:#475467;">Invoice #: ' . htmlspecialchars($receiptNo) . '</div>
+                <div style="margin-top:28px;">
+                    <a href="' . htmlspecialchars($viewLink) . '" style="display:block;width:100%;box-sizing:border-box;padding:18px 24px;border-radius:0;background:linear-gradient(135deg,#2d9cf0,#3b82f6);color:#ffffff;text-decoration:none;font-size:18px;font-weight:700;">View Invoice</a>
+                </div>
             </div>
-            <div style="padding:28px;">
-                <p style="margin-top:0;">Good day,</p>
-                <p>This is the tuition breakdown for <strong>' . htmlspecialchars($studentName) . '</strong>.</p>
-                <table style="width:100%;border-collapse:collapse;margin:18px 0;">
-                    <tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;">Student ID</td><td style="padding:10px;border:1px solid #e5e7eb;">' . htmlspecialchars((string)($student['student_id'] ?? '')) . '</td></tr>
-                    <tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;">Student Name</td><td style="padding:10px;border:1px solid #e5e7eb;">' . htmlspecialchars($studentName) . '</td></tr>
-                    <tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;">Grade Level</td><td style="padding:10px;border:1px solid #e5e7eb;">' . htmlspecialchars((string)($student['grade_level'] ?? '')) . '</td></tr>
-                    <tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;">School Year</td><td style="padding:10px;border:1px solid #e5e7eb;">' . htmlspecialchars((string)($student['school_year'] ?? '')) . '</td></tr>
-                    <tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;">Payment Date</td><td style="padding:10px;border:1px solid #e5e7eb;">' . htmlspecialchars((string)($payment['payment_date'] ?? '')) . '</td></tr>
-                    <tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;">Receipt No.</td><td style="padding:10px;border:1px solid #e5e7eb;">' . htmlspecialchars($receiptNo) . '</td></tr>
-                    <tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;">Tuition Fee</td><td style="padding:10px;border:1px solid #e5e7eb;">' . htmlspecialchars(format_money((float)($payment['tuition_fee'] ?? 0))) . '</td></tr>
-                    <tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;">Total Breakdown</td><td style="padding:10px;border:1px solid #e5e7eb;">' . htmlspecialchars(format_money((float)($payment['amount_paid'] ?? 0))) . '</td></tr>
-                    <tr><td style="padding:10px;border:1px solid #e5e7eb;background:#f8fafc;">Remaining Balance</td><td style="padding:10px;border:1px solid #e5e7eb;">' . htmlspecialchars(format_money($remainingBalance)) . '</td></tr>
-                </table>
-                <h3 style="margin:24px 0 12px;font-size:18px;color:#19325a;">Payment Breakdown</h3>
-                <table style="width:100%;border-collapse:collapse;">'
-                    . render_receipt_items_html($items) .
-                '</table>
-                <p style="margin-bottom:0;margin-top:24px;">Thank you.<br>SMARTENROLL / Adreo Montessori Inc.</p>
+
+            <div style="margin-top:34px;color:#41566d;font-size:16px;line-height:1.8;">
+                <p style="margin:0 0 18px;">Hi,</p>
+                <p style="margin:0 0 18px;">Here&apos;s invoice <strong style="color:#22374f;">' . htmlspecialchars($receiptNo) . '</strong> for <strong style="color:#22374f;">' . htmlspecialchars(format_money($invoiceAmount)) . '</strong>.</p>
+                <p style="margin:0 0 18px;">The amount outstanding of <strong style="color:#22374f;">' . htmlspecialchars(format_money($invoiceAmount)) . '</strong> is due on <strong style="color:#22374f;">' . htmlspecialchars($dueDateDisplay) . '</strong>.</p>
+                <p style="margin:0 0 18px;">View your bill online: <a href="' . htmlspecialchars($viewLink) . '" style="color:#2d7ff9;text-decoration:underline;word-break:break-all;">' . htmlspecialchars($viewLink) . '</a></p>
+                <p style="margin:0 0 18px;">From your online bill you can print a PDF, export a CSV, or create a free login and view your outstanding bills.</p>
+                <p style="margin:0 0 18px;">If you have any questions, please let us know.</p>
+                <p style="margin:0;">Thanks,<br>Adreo Montessori Inc.</p>
             </div>
+
+            <table style="width:100%;border-collapse:collapse;margin-top:40px;">
+                <thead>
+                    <tr>
+                        <th style="padding:0 0 12px;text-align:left;border-bottom:1px solid #d6e2f1;color:#41566d;font-size:13px;letter-spacing:0.08em;text-transform:uppercase;">Description</th>
+                        <th style="padding:0 0 12px 16px;text-align:right;border-bottom:1px solid #d6e2f1;color:#41566d;font-size:13px;letter-spacing:0.08em;text-transform:uppercase;">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>' . $emailItemsHtml . '</tbody>
+            </table>
         </div>
     </body>
     </html>';
 
     $text = implode("\r\n", [
-        'Tuition Breakdown Receipt',
+        'Tuition Invoice',
+        '',
+        'Adreo Montessori Inc.',
+        'Invoice #: ' . $receiptNo,
+        'Due Date: ' . $dueDateDisplay,
+        'Invoice Amount: ' . format_money($invoiceAmount),
+        'View Invoice: ' . $viewLink,
+        '',
+        'Hi,',
+        'Here\'s invoice ' . $receiptNo . ' for ' . format_money($invoiceAmount) . '.',
+        'The amount outstanding of ' . format_money($invoiceAmount) . ' is due on ' . $dueDateDisplay . '.',
         '',
         'Student ID: ' . ($student['student_id'] ?? ''),
         'Student Name: ' . $studentName,
-        'Grade Level: ' . ($student['grade_level'] ?? ''),
-        'School Year: ' . ($student['school_year'] ?? ''),
-        'Payment Date: ' . ($payment['payment_date'] ?? ''),
-        'Receipt No.: ' . $receiptNo,
-        'Tuition Fee: ' . format_money((float)($payment['tuition_fee'] ?? 0)),
+        'Invoice Number: ' . $receiptNo,
         'Total Breakdown: ' . format_money((float)($payment['amount_paid'] ?? 0)),
         'Remaining Balance: ' . format_money($remainingBalance),
         '',
-        'Payment Breakdown:',
+        'Description / Amount:',
         render_receipt_items_text($items),
         '',
-        'SMARTENROLL / Adreo Montessori Inc.',
+        'If you have any questions, please let us know.',
+        '',
+        'Thanks,',
+        'Adreo Montessori Inc.',
     ]);
 
-    return smtp_send_mail($to, $subject, $html, $text, $lastEmailError);
+    return smtp_send_mail($to, $subject, $html, $text, $lastEmailError, $embeddedImages);
 }
 
 try {
     $conn = new mysqli('127.0.0.1', 'root', '', 'smartenroll');
     $conn->set_charset('utf8mb4');
-    $tuitionMap = smartenroll_get_grade_tuition_map($conn);
-    $gradeBreakdownMap = smartenroll_get_grade_breakdown_map($conn);
 
     $conn->query(
         "CREATE TABLE IF NOT EXISTS tuition_payments (
@@ -613,19 +699,24 @@ try {
                 throw new RuntimeException('Duplicate or expired submission detected. Please refresh and try again.');
             }
 
+            $submitMode = trim((string)($_POST['submit_mode'] ?? 'save'));
             $paymentDate = trim((string)($_POST['payment_date'] ?? date('Y-m-d')));
-            $receiptNo = trim((string)($_POST['receipt_no'] ?? ''));
+            $receiptNo = strtoupper(trim((string)($_POST['receipt_no'] ?? '')));
             $paymentNote = trim((string)($_POST['payment_note'] ?? ''));
             $gradeLevel = trim((string)($selectedStudent['grade_level'] ?? ''));
             $selectedSchoolYear = trim((string)($selectedStudent['school_year'] ?? ''));
+            $resolvedGrade = smartenroll_find_grade_level($gradeLevel, $conn);
 
-            if (!array_key_exists($gradeLevel, $tuitionMap)) {
+            if ($resolvedGrade === null) {
                 throw new RuntimeException('No tuition fee is configured yet for this grade level.');
             }
 
-            $tuitionFee = (float)$tuitionMap[$gradeLevel];
+            $tuitionFee = round((float)($resolvedGrade['tuition_fee'] ?? 0), 2);
             $paidByOption = get_paid_amounts_by_option($conn, (int)$selectedStudent['id'], $selectedSchoolYear);
-            $gradeFeeDefaults = $gradeBreakdownMap[$gradeLevel] ?? ['Tuition Fee' => $tuitionFee];
+            $gradeFeeDefaults = smartenroll_resolve_grade_breakdown($gradeLevel, $conn);
+            if ($gradeFeeDefaults === []) {
+                $gradeFeeDefaults = ['Tuition Fee' => $tuitionFee];
+            }
             $fixedFeeTotal = 0.0;
             foreach ($gradeFeeDefaults as $option => $defaultAmount) {
                 if ($option !== 'Tuition Fee') {
@@ -664,8 +755,14 @@ try {
             }
 
             $paymentOptions = array_keys($paymentConfig);
+            $rawPaymentItemsJson = $submitMode === 'preview_send'
+                ? trim((string)($_POST['preview_email_items_json'] ?? ''))
+                : trim((string)($_POST['payment_items_json'] ?? ''));
+            if ($rawPaymentItemsJson === '') {
+                $rawPaymentItemsJson = trim((string)($_POST['payment_items_json'] ?? ''));
+            }
             $paymentItems = parse_payment_items(
-                (string)($_POST['payment_items_json'] ?? ''),
+                $rawPaymentItemsJson,
                 $paymentOptions,
                 $paymentConfig,
                 $tuitionFee
@@ -706,27 +803,60 @@ try {
             $balanceAfter = max(0, round($tuitionFee - $runningPaid, 2));
             $emailValue = trim((string)($selectedStudent['email'] ?? ''));
             $paymentItemsJson = json_encode($paymentItems, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-            $paymentToken = generate_payment_token();
 
+            if ($receiptNo === '' || !preg_match('/^INV-\d{4}$/', $receiptNo)) {
+                $receiptNo = generate_unique_invoice_number($conn);
+            }
+
+            if ($submitMode === 'preview_send') {
+                if (invoice_number_exists($conn, $receiptNo)) {
+                    $receiptNo = generate_unique_invoice_number($conn);
+                }
+
+                if (!filter_var($emailValue, FILTER_VALIDATE_EMAIL)) {
+                    $_SESSION['pay_tuition_warning'] = 'The student has no valid email in the enrollment form, so the invoice could not be sent.';
+                    header('Location: tuition_receipt_details.php?student_id=' . urlencode($selectedId) . '#receipt-email-preview');
+                    exit;
+                }
+
+                $previewPayment = [
+                    'id' => 0,
+                    'student_id' => $selectedStudent['student_id'],
+                    'payment_date' => $paymentDate,
+                    'amount_paid' => $amountPaid,
+                    'tuition_fee' => $tuitionFee,
+                    'balance_after' => $remainingBefore,
+                    'receipt_no' => $receiptNo,
+                    'payment_note' => $paymentNote,
+                    'payment_items' => $paymentItemsJson,
+                    'email_sent' => 0,
+                ];
+
+                $sent = send_receipt_email($selectedStudent, $previewPayment);
+                if ($sent) {
+                    write_audit_log($conn, $currentUser, 'tuition_invoice_preview_emailed', 'tuition_invoice_preview', $receiptNo, [
+                        'student_id' => (string)$selectedStudent['student_id'],
+                        'email' => $emailValue,
+                        'amount' => $amountPaid,
+                        'items' => $paymentItems,
+                    ]);
+
+                    $_SESSION['pay_tuition_success'] = 'Invoice preview sent to ' . $emailValue . '. It was not saved as a paid invoice.';
+                } else {
+                    $_SESSION['pay_tuition_warning'] = $lastEmailError !== ''
+                        ? 'The invoice preview could not be sent: ' . $lastEmailError
+                        : 'The invoice preview could not be sent.';
+                }
+
+                header('Location: tuition_receipt_details.php?student_id=' . urlencode($selectedId) . '#receipt-email-preview');
+                exit;
+            }
+
+            $paymentToken = generate_payment_token();
             $conn->begin_transaction();
             try {
-                if ($receiptNo !== '') {
-                    $receiptCheckStmt = $conn->prepare(
-                        "SELECT id
-                         FROM tuition_payments
-                         WHERE enrollment_id = ?
-                           AND COALESCE(school_year, '') = ?
-                           AND receipt_no = ?
-                         LIMIT 1"
-                    );
-                    $receiptCheckStmt->bind_param('iss', $selectedStudent['id'], $selectedSchoolYear, $receiptNo);
-                    $receiptCheckStmt->execute();
-                    $duplicateReceipt = $receiptCheckStmt->get_result()->fetch_assoc();
-                    $receiptCheckStmt->close();
-
-                    if ($duplicateReceipt) {
-                        throw new RuntimeException('Official receipt number already exists for this school year.');
-                    }
+                if (invoice_number_exists($conn, $receiptNo)) {
+                    $receiptNo = generate_unique_invoice_number($conn);
                 }
 
                 $insertStmt = $conn->prepare(
@@ -770,9 +900,9 @@ try {
                 throw $txError;
             }
 
-            $_SESSION['pay_tuition_success'] = 'Receipt created. You can now send it to ' . ($emailValue !== '' ? $emailValue : 'the registered enrollment email') . '.';
+            $_SESSION['pay_tuition_success'] = 'Invoice created. You can now send it to ' . ($emailValue !== '' ? $emailValue : 'the registered enrollment email') . '.';
             if (!filter_var($emailValue, FILTER_VALIDATE_EMAIL)) {
-                $_SESSION['pay_tuition_warning'] = 'The student has no valid email in the enrollment form, so the receipt cannot be sent yet.';
+                $_SESSION['pay_tuition_warning'] = 'The student has no valid email in the enrollment form, so the invoice cannot be sent yet.';
             }
 
             header('Location: tuition_receipt_details.php?student_id=' . urlencode($selectedId) . '&payment_id=' . $newPaymentId);
@@ -782,7 +912,7 @@ try {
         if ($action === 'send_receipt') {
             $paymentId = (int)($_POST['payment_id'] ?? 0);
             if ($paymentId <= 0) {
-                throw new RuntimeException('No saved payment receipt was selected.');
+                throw new RuntimeException('No saved invoice was selected.');
             }
 
             $paymentStmt = $conn->prepare(
@@ -797,7 +927,7 @@ try {
             $paymentStmt->close();
 
             if (!$payment) {
-                throw new RuntimeException('The selected receipt could not be found.');
+                throw new RuntimeException('The selected invoice could not be found.');
             }
 
             $studentEmail = trim((string)($selectedStudent['email'] ?? ''));
@@ -807,7 +937,7 @@ try {
 
             $sent = send_receipt_email($selectedStudent, $payment);
             if (!$sent) {
-                throw new RuntimeException($lastEmailError ?: 'The receipt email could not be sent from this server.');
+                throw new RuntimeException($lastEmailError ?: 'The invoice email could not be sent from this server.');
             }
 
             $updateStmt = $conn->prepare("UPDATE tuition_payments SET email_sent = 1, email = ? WHERE id = ?");
@@ -820,7 +950,7 @@ try {
                 'email' => $studentEmail,
             ]);
 
-            $_SESSION['pay_tuition_success'] = 'Receipt sent to ' . $studentEmail . '.';
+            $_SESSION['pay_tuition_success'] = 'Invoice sent to ' . $studentEmail . '.';
             header('Location: tuition_receipt_details.php?student_id=' . urlencode($selectedId) . '&payment_id=' . $paymentId);
             exit;
         }
@@ -861,12 +991,15 @@ try {
 }
 
 $selectedGradeLevel = $selectedStudent['grade_level'] ?? '';
-$selectedTuitionFee = $selectedStudent && array_key_exists($selectedGradeLevel, $tuitionMap)
-    ? (float)$tuitionMap[$selectedGradeLevel]
+$selectedTuitionFee = $selectedStudent
+    ? (smartenroll_resolve_grade_tuition_fee($selectedGradeLevel, isset($conn) && $conn instanceof mysqli ? $conn : null) ?? 0.0)
     : 0.0;
 $gradeFeeDefaults = $selectedStudent
-    ? ($gradeBreakdownMap[$selectedGradeLevel] ?? ['Tuition Fee' => $selectedTuitionFee])
+    ? smartenroll_resolve_grade_breakdown($selectedGradeLevel, isset($conn) && $conn instanceof mysqli ? $conn : null)
     : [];
+if ($selectedStudent && $gradeFeeDefaults === []) {
+    $gradeFeeDefaults = ['Tuition Fee' => $selectedTuitionFee];
+}
 $fixedFeeTotal = 0.0;
 foreach ($gradeFeeDefaults as $option => $defaultAmount) {
     if ($option !== 'Tuition Fee') {
@@ -876,7 +1009,8 @@ foreach ($gradeFeeDefaults as $option => $defaultAmount) {
 $fullTuitionAmount = max(0, round($selectedTuitionFee - $fixedFeeTotal, 2));
 $monthlyPaymentAmount = max(0, round($fullTuitionAmount / 10, 2));
 $savedReceiptCount = count($paymentHistory);
-$remainingBalance = max(0, round($selectedTuitionFee - sum_payment_history($paymentHistory), 2));
+$totalPaid = sum_payment_history($paymentHistory);
+$remainingBalance = max(0, round($selectedTuitionFee - $totalPaid, 2));
 $paidByOption = get_paid_amounts_from_history($paymentHistory);
 $studentName = $selectedStudent ? format_name($selectedStudent) : '';
 $studentEmail = trim((string)($selectedStudent['email'] ?? ''));
@@ -935,6 +1069,13 @@ foreach ($paymentOptions as $option) {
         'hint' => $hint,
     ];
 }
+$hasEnabledPaymentOption = false;
+foreach ($paymentCatalog as $catalogItem) {
+    if (empty($catalogItem['disabled'])) {
+        $hasEnabledPaymentOption = true;
+        break;
+    }
+}
 
 $paymentCatalogJson = htmlspecialchars(json_encode($paymentCatalog, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 $tuitionReceiptCsrfToken = smartenroll_csrf_token('tuition_receipt_details_form');
@@ -942,26 +1083,82 @@ $tuitionSaveIdempotencyKey = smartenroll_issue_one_time_token('tuition_save_paym
 $emailConfig = get_email_config();
 $configuredAppUrl = trim((string)($emailConfig['app_url'] ?? ''));
 $uploadLinkNeedsRealHost = $configuredAppUrl === '' || is_loopback_host((string)parse_url($configuredAppUrl, PHP_URL_HOST));
+$schoolAddressLines = [
+    'Adreo Montessori Inc.',
+    'Bldg. 42-43 Great Mall of',
+    'Central Luzon, Brgy. Tabun',
+    'Xevera',
+    'MABALACAT CITY',
+    'PAMPANGA 2010',
+    'PHILIPPINES',
+];
+$paymentDetailBlocks = [
+    [
+        'branch' => 'ADREO XEVERA',
+        'account_name' => 'ADREO MONTESSORI INCORPORATED',
+        'bank' => 'Bank of the Philippine Islands (BPI)',
+        'account_number' => '0121-0022-01',
+    ],
+    [
+        'branch' => 'ADREO ANGELES',
+        'account_name' => 'ADREO LEARNING HUB',
+        'bank' => 'Security Bank',
+        'account_number' => '0000073919401',
+    ],
+    [
+        'branch' => 'ADREO CAMACHILES',
+        'account_name' => 'ADREO MONTESSORI INCORPORATED',
+        'bank' => 'Philippine National Bank (PNB)',
+        'account_number' => '203570004892',
+    ],
+];
+$suggestedInvoiceNumber = '';
+$selectedReceiptNo = '';
+$selectedPaymentItems = [];
+$selectedPaymentRemainingBalance = 0.0;
+$selectedPaymentCumulativePaid = 0.0;
+$selectedPaymentAmount = 0.0;
+$selectedPaymentDateDisplay = 'N/A';
+$selectedPaymentNote = '';
+$selectedPaymentDueDateDisplay = 'N/A';
+$registeredOfficeLine = 'Registered Office: Bldg. 42-43 Great Mall of Central Luzon, Brgy. Tabun Xevera, Mabalacat City, Pampanga, 2010, Philippines.';
+
+if ($selectedStudent && $selectedPayment) {
+    $selectedReceiptNo = trim((string)($selectedPayment['receipt_no'] ?? '')) !== '' ? (string)$selectedPayment['receipt_no'] : 'N/A';
+    $selectedPaymentItems = is_array($selectedPayment['items'] ?? null)
+        ? $selectedPayment['items']
+        : decode_saved_payment_items((string)($selectedPayment['payment_items'] ?? ''), (float)($selectedPayment['amount_paid'] ?? 0));
+    $selectedPaymentRemainingBalance = resolve_payment_balance_after($selectedPayment);
+    $selectedPaymentCumulativePaid = get_payment_cumulative_paid($selectedPayment);
+    $selectedPaymentAmount = round((float)($selectedPayment['amount_paid'] ?? 0), 2);
+    $selectedPaymentDateDisplay = format_invoice_date((string)($selectedPayment['payment_date'] ?? ''));
+    $selectedPaymentDueDateDisplay = $selectedPaymentDateDisplay;
+    $selectedPaymentNote = trim((string)($selectedPayment['payment_note'] ?? ''));
+}
+
+if (isset($conn) && $conn instanceof mysqli) {
+    $suggestedInvoiceNumber = generate_unique_invoice_number($conn);
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>SMARTENROLL | Tuition Receipt Details</title>
+    <title>SMARTENROLL | Tuition Invoice Details</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="css/style.css">
     <link rel="stylesheet" href="css/pay_tuition.css">
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 </head>
-<body class="dashboard-page dashboard-white-page">
-<main class="dashboard-main">
+<body class="dashboard-page dashboard-white-page receipt-details-page">
+<main class="dashboard-main pay-list-main receipt-details-main">
     <div class="dashboard-header tuition-header">
         <div class="student-header-left">
             <a href="tuition_receipt.php" class="dashboard-link back-left"><i class="fa-solid fa-arrow-left"></i></a>
             <div class="student-header-title">
-                <h1>Tuition Receipt Details</h1>
-                <p>Use the plus button to add the brochure breakdown items, then type the tuition amount and review the computed total below.</p>
+                <h1>Tuition Invoice Details</h1>
+                <p>Use the plus button to add the brochure breakdown items, then type the tuition amount and review the computed invoice total below.</p>
             </div>
         </div>
     </div>
@@ -980,6 +1177,7 @@ $uploadLinkNeedsRealHost = $configuredAppUrl === '' || is_loopback_host((string)
     <?php endif; ?>
 
     <?php if ($selectedStudent): ?>
+        <div class="receipt-workspace">
         <div class="selected-student-banner detail-student-banner">
             <div class="selected-student-copy">
                 <span class="eyebrow">Selected Student</span>
@@ -1008,7 +1206,7 @@ $uploadLinkNeedsRealHost = $configuredAppUrl === '' || is_loopback_host((string)
                 <strong><?php echo htmlspecialchars(format_money($selectedTuitionFee)); ?></strong>
             </div>
             <div class="summary-card">
-                <span>Saved Receipts</span>
+                <span>Saved Invoices</span>
                 <strong><?php echo htmlspecialchars((string)$savedReceiptCount); ?></strong>
             </div>
             <div class="summary-card accent">
@@ -1017,114 +1215,203 @@ $uploadLinkNeedsRealHost = $configuredAppUrl === '' || is_loopback_host((string)
             </div>
             <div class="summary-card">
                 <span>Email Status</span>
-                <strong><?php echo filter_var($studentEmail, FILTER_VALIDATE_EMAIL) ? 'Ready to send receipt' : 'Invalid student email'; ?></strong>
+                <strong><?php echo filter_var($studentEmail, FILTER_VALIDATE_EMAIL) ? 'Ready to send invoice' : 'Invalid student email'; ?></strong>
             </div>
         </div>
 
-        <div class="detail-grid">
-            <section class="card-block">
-                <div class="block-head">
-                    <h3>Step 2: Choose Payment Rows</h3>
-                    <p>Select the brochure items you want to include. Tuition Fee now shows the current remaining balance, and Monthly Payment is available as a fixed choice.</p>
-                    <p class="selection-rule-note">Choose either Tuition Fee or Monthly Payment per receipt (not both).</p>
+        <?php $previewInvoiceLink = build_app_url('tuition_receipt_details.php', ['student_id' => (string)$selectedStudent['student_id']]) . '#receipt-email-preview'; ?>
+        <section class="card-block invoice-email-preview-panel" id="receipt-email-preview">
+            <div class="invoice-email-preview-actions">
+                <button type="button" class="secondary-btn" id="invoiceEmailPrintTrigger">
+                    <i class="fa-solid fa-print"></i>
+                    Print Invoice
+                </button>
+                <button type="button" class="primary-btn" id="invoiceEmailSendTrigger" <?php echo filter_var($studentEmail, FILTER_VALIDATE_EMAIL) ? '' : 'disabled'; ?>>
+                    <i class="fa-solid fa-paper-plane"></i>
+                    Send to Gmail
+                </button>
+            </div>
+            <div class="invoice-email-shell">
+                <div class="invoice-email-brand">
+                    <img src="assets/logo.png" alt="Adreo Montessori Logo">
+                    <strong>Adreo Montessori Inc.</strong>
                 </div>
 
-                <div class="payment-catalog-card" id="paymentCatalog" data-catalog="<?php echo $paymentCatalogJson; ?>">
-                    <div class="catalog-row catalog-header">
-                        <span>Add</span>
-                        <span>Payment Item</span>
-                        <span>Brochure Amount</span>
-                        <span>Details</span>
+                <div class="invoice-email-total">
+                    <strong id="invoiceEmailTotal">0.00</strong>
+                    <span>PHP</span>
+                </div>
+
+                <div class="invoice-email-meta">
+                    <strong id="invoiceEmailDueDate">Due <?php echo htmlspecialchars(format_invoice_date(date('Y-m-d'))); ?></strong>
+                    <span>Invoice #: <span id="invoiceEmailNumber"><?php echo htmlspecialchars($suggestedInvoiceNumber); ?></span></span>
+                </div>
+
+                <a class="invoice-email-cta" id="invoiceEmailCta" href="<?php echo htmlspecialchars($previewInvoiceLink); ?>">View Invoice</a>
+
+                <div class="invoice-email-message">
+                    <p>Hi,</p>
+                    <p>Here&apos;s invoice <strong id="invoiceEmailBodyNumber"><?php echo htmlspecialchars($suggestedInvoiceNumber); ?></strong> for <strong id="invoiceEmailBodyAmount">PHP 0.00</strong>.</p>
+                    <p>The amount outstanding of <strong id="invoiceEmailBodyOutstanding">PHP 0.00</strong> is due on <strong id="invoiceEmailBodyDueDate"><?php echo htmlspecialchars(format_invoice_date(date('Y-m-d'))); ?></strong>.</p>
+                    <p>View your bill online: <a id="invoiceEmailViewLink" href="<?php echo htmlspecialchars($previewInvoiceLink); ?>"><?php echo htmlspecialchars($previewInvoiceLink); ?></a></p>
+                    <p>From your online bill you can print a PDF, export a CSV, or create a free login and view your outstanding bills.</p>
+                    <p>If you have any questions, please let us know.</p>
+                    <p>Thanks,<br>Adreo Montessori Inc.</p>
+                </div>
+
+                <div class="invoice-email-items">
+                    <div class="invoice-email-items-head">
+                        <span>Description</span>
+                        <span>Amount</span>
                     </div>
-                    <?php foreach ($paymentCatalog as $catalogItem): ?>
-                        <div
-                            class="catalog-row<?php echo !empty($catalogItem['disabled']) ? ' is-disabled' : ''; ?>"
-                            data-option="<?php echo htmlspecialchars($catalogItem['option']); ?>"
-                            data-default="<?php echo htmlspecialchars(number_format((float)$catalogItem['default_amount'], 2, '.', '')); ?>"
-                            data-disabled="<?php echo !empty($catalogItem['disabled']) ? '1' : '0'; ?>"
-                        >
-                            <button type="button" class="catalog-add-btn" aria-label="Add <?php echo htmlspecialchars($catalogItem['option']); ?>" <?php echo !empty($catalogItem['disabled']) ? 'disabled' : ''; ?>>
-                                <i class="fa-solid <?php echo !empty($catalogItem['disabled']) ? 'fa-check' : 'fa-plus'; ?>"></i>
-                            </button>
-                            <strong><?php echo htmlspecialchars($catalogItem['option']); ?></strong>
-                            <span><?php echo htmlspecialchars(format_money((float)$catalogItem['default_amount'])); ?></span>
-                            <small><?php echo htmlspecialchars($catalogItem['hint']); ?></small>
+                    <div class="invoice-email-items-body" id="invoiceEmailItems">
+                        <div class="invoice-email-line-item is-empty">
+                            <div class="invoice-email-empty-action">
+                                <span>No billing item added yet</span>
+                                <button type="button" class="invoice-email-add-trigger" aria-label="Add payment item" aria-haspopup="true" aria-expanded="false">
+                                    <i class="fa-solid fa-plus"></i>
+                                    <span>Add payment item</span>
+                                </button>
+                                <div class="payment-catalog-card invoice-email-catalog-menu" id="invoiceEmailCatalog">
+                                    <?php foreach ($paymentCatalog as $catalogItem): ?>
+                                        <?php $catalogDisplayLabel = build_invoice_item_description($selectedStudent, ['label' => $catalogItem['option']]); ?>
+                                        <div
+                                            class="catalog-row invoice-email-catalog-row<?php echo !empty($catalogItem['disabled']) ? ' is-disabled' : ''; ?>"
+                                            data-option="<?php echo htmlspecialchars($catalogItem['option']); ?>"
+                                            data-display-label="<?php echo htmlspecialchars($catalogDisplayLabel); ?>"
+                                            data-default="<?php echo htmlspecialchars(number_format((float)$catalogItem['default_amount'], 2, '.', '')); ?>"
+                                            data-disabled="<?php echo !empty($catalogItem['disabled']) ? '1' : '0'; ?>"
+                                        >
+                                            <button type="button" class="catalog-add-btn" aria-label="Add <?php echo htmlspecialchars($catalogItem['option']); ?>" <?php echo !empty($catalogItem['disabled']) ? 'disabled' : ''; ?>>
+                                                <i class="fa-solid <?php echo !empty($catalogItem['disabled']) ? 'fa-check' : 'fa-plus'; ?>"></i>
+                                            </button>
+                                            <div class="receipt-catalog-copy">
+                                                <strong><?php echo htmlspecialchars($catalogDisplayLabel); ?></strong>
+                                                <span><?php echo htmlspecialchars(format_invoice_money((float)$catalogItem['default_amount'])); ?></span>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                            <strong>0.00</strong>
                         </div>
-                    <?php endforeach; ?>
+                    </div>
                 </div>
-            </section>
+            </div>
+        </section>
 
-            <section class="card-block">
-                <div class="block-head">
-                    <h3>Step 3: Review Total And Details</h3>
-                    <p>Enter the receipt date and receipt number. Tuition Fee is editable, while the other rows use the brochure amount automatically. The remaining balance below updates as you add rows.</p>
-                </div>
-
-                <form class="payment-form" method="post" action="tuition_receipt_details.php" id="paymentBuilderForm">
+        <div class="detail-grid builder-grid">
+            <section class="card-block receipt-builder-panel">
+                <form class="payment-form receipt-builder-form" method="post" action="tuition_receipt_details.php" id="paymentBuilderForm">
                     <input type="hidden" name="action" value="save_payment">
                     <input type="hidden" name="student_id" value="<?php echo htmlspecialchars((string)$selectedStudent['student_id']); ?>">
                     <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($tuitionReceiptCsrfToken); ?>">
                     <input type="hidden" name="idempotency_key" value="<?php echo htmlspecialchars($tuitionSaveIdempotencyKey); ?>">
                     <input type="hidden" name="payment_items_json" id="paymentItemsJson">
+                    <input type="hidden" name="preview_email_items_json" id="previewEmailItemsJson">
+                    <input type="hidden" name="submit_mode" id="paymentSubmitMode" value="save">
 
-                    <div class="form-grid">
-                        <label>
-                            Payment Date
-                            <input type="date" name="payment_date" value="<?php echo htmlspecialchars(date('Y-m-d')); ?>" required>
-                        </label>
-                        <label>
-                            Receipt No.
-                            <input type="text" name="receipt_no" placeholder="Official receipt number">
-                        </label>
+                    <div class="receipt-builder-toolbar">
+                        <div class="receipt-builder-fields">
+                            <label class="receipt-inline-field">
+                                <span class="sr-only">Payment Date</span>
+                                <input type="date" name="payment_date" id="paymentDateInput" value="<?php echo htmlspecialchars(date('Y-m-d')); ?>" aria-label="Payment Date" required>
+                            </label>
+                            <label class="receipt-inline-field">
+                                <span class="sr-only">Invoice No.</span>
+                                <input type="text" name="receipt_no" id="receiptNumberInput" value="<?php echo htmlspecialchars($suggestedInvoiceNumber); ?>" placeholder="Invoice No." aria-label="Invoice No." readonly>
+                            </label>
+                        </div>
                     </div>
 
-                    <div class="selected-payment-card">
-                        <div class="selected-payment-head">
-                            <h4>Selected Rows</h4>
-                            <span>Tuition Fee can be edited. Other rows stay fixed.</span>
-                        </div>
-                        <div
-                            class="selected-payment-table"
+                    <div class="selected-payment-card receipt-lines-panel">
+                        <div class="receipt-entry-table-wrap">
+                            <table class="receipt-entry-table">
+                                <thead>
+                                    <tr>
+                                        <th>Description</th>
+                                        <th>Quantity</th>
+                                        <th>Unit Price</th>
+                                        <th>Discount</th>
+                                        <th>Tax</th>
+                                        <th>Amount PHP</th>
+                                    </tr>
+                                </thead>
+                                <tbody
+                            class="selected-payment-table receipt-entry-body"
                             id="selectedPaymentTable"
                             data-remaining="<?php echo htmlspecialchars(number_format($remainingBalance, 2, '.', '')); ?>"
                             data-full-tuition="<?php echo htmlspecialchars(number_format($selectedTuitionFee, 2, '.', '')); ?>"
-                        >
-                            <div class="selected-payment-row selected-payment-header">
-                                <span>Remove</span>
-                                <span>Payment Item</span>
-                                <span>Brochure Amount</span>
-                                <span>Amount To Send</span>
-                            </div>
-                            <div class="selected-payment-empty" id="selectedPaymentEmpty">
-                                Click the plus button from the left table to add a payment row.
-                            </div>
+                            data-paid-total="<?php echo htmlspecialchars(number_format($totalPaid, 2, '.', '')); ?>"
+                                >
+                                    <tr class="receipt-add-row">
+                                        <td class="receipt-add-row-cell" colspan="6">
+                                            <div class="receipt-add-wrap">
+                                                <button
+                                                    type="button"
+                                                    class="receipt-add-trigger"
+                                                    id="receiptAddTrigger"
+                                                    aria-label="Add payment row"
+                                                    aria-haspopup="true"
+                                                    aria-expanded="false"
+                                                    <?php echo $hasEnabledPaymentOption ? '' : 'disabled'; ?>
+                                                >
+                                                    <i class="fa-solid fa-plus"></i>
+                                                </button>
+                                                <div class="payment-catalog-card receipt-catalog-menu" id="paymentCatalog" data-catalog="<?php echo $paymentCatalogJson; ?>">
+                                                    <?php foreach ($paymentCatalog as $catalogItem): ?>
+                                                        <?php $catalogDisplayLabel = build_invoice_item_description($selectedStudent, ['label' => $catalogItem['option']]); ?>
+                                                        <div
+                                                            class="catalog-row receipt-catalog-row<?php echo !empty($catalogItem['disabled']) ? ' is-disabled' : ''; ?>"
+                                                            data-option="<?php echo htmlspecialchars($catalogItem['option']); ?>"
+                                                            data-display-label="<?php echo htmlspecialchars($catalogDisplayLabel); ?>"
+                                                            data-default="<?php echo htmlspecialchars(number_format((float)$catalogItem['default_amount'], 2, '.', '')); ?>"
+                                                            data-disabled="<?php echo !empty($catalogItem['disabled']) ? '1' : '0'; ?>"
+                                                        >
+                                                            <button type="button" class="catalog-add-btn" aria-label="Add <?php echo htmlspecialchars($catalogItem['option']); ?>" <?php echo !empty($catalogItem['disabled']) ? 'disabled' : ''; ?>>
+                                                                <i class="fa-solid <?php echo !empty($catalogItem['disabled']) ? 'fa-check' : 'fa-plus'; ?>"></i>
+                                                            </button>
+                                                            <div class="receipt-catalog-copy">
+                                                                <strong><?php echo htmlspecialchars($catalogDisplayLabel); ?></strong>
+                                                                <span><?php echo htmlspecialchars(format_invoice_money((float)$catalogItem['default_amount'])); ?></span>
+                                                            </div>
+                                                        </div>
+                                                    <?php endforeach; ?>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    <tr class="selected-payment-empty" id="selectedPaymentEmpty">
+                                        <td colspan="6"></td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 
-                    <label>
-                        Payment Note
-                        <textarea name="payment_note" rows="3" placeholder="Optional note for this receipt"></textarea>
-                    </label>
-
-                    <div class="amount-preview">
-                        <div>
-                            <span>Full Tuition</span>
-                            <strong><?php echo htmlspecialchars(format_money($selectedTuitionFee)); ?></strong>
+                    <div class="receipt-builder-summary">
+                        <div class="receipt-builder-summary-row compact">
+                            <span>Subtotal</span>
+                            <strong id="paymentPreview">0.00</strong>
                         </div>
-                        <div>
-                            <span>Total Breakdown</span>
-                            <strong id="paymentPreview">PHP 0.00</strong>
+                        <div class="receipt-builder-summary-row rule-top">
+                            <span>TOTAL PHP</span>
+                            <strong id="totalPaidPreview"><?php echo htmlspecialchars(format_invoice_money($totalPaid)); ?></strong>
                         </div>
-                        <div>
-                            <span>Remaining Balance</span>
-                            <strong id="balanceAfterPreview"><?php echo htmlspecialchars(format_money($remainingBalance)); ?></strong>
+                        <div class="receipt-builder-summary-row">
+                            <span>Less Amount Paid</span>
+                            <strong id="lessAmountPaidPreview">0.00</strong>
+                        </div>
+                        <div class="receipt-builder-summary-row due">
+                            <span>AMOUNT DUE PHP</span>
+                            <strong id="balanceAfterPreview"><?php echo htmlspecialchars(format_invoice_money($remainingBalance)); ?></strong>
                         </div>
                     </div>
 
                     <div class="form-actions">
-                        <button type="submit" class="primary-btn">
+                        <button type="submit" class="primary-btn" id="saveInvoiceButton">
                             <i class="fa-solid fa-receipt"></i>
-                            Save Receipt
+                            Save Invoice
                         </button>
                         <a class="cancel-btn" href="tuition_receipt_details.php?student_id=<?php echo urlencode((string)$selectedStudent['student_id']); ?>">
                             <i class="fa-solid fa-rotate-left"></i>
@@ -1136,64 +1423,10 @@ $uploadLinkNeedsRealHost = $configuredAppUrl === '' || is_loopback_host((string)
         </div>
 
         <div class="detail-grid lower-detail-grid">
-            <section class="card-block">
-                <div class="block-head">
-                    <h3>Latest Receipt Preview</h3>
-                    <p>After you save a receipt, it will appear here with its row breakdown.</p>
-                </div>
-
-                <?php if ($selectedPayment): ?>
-                    <div class="receipt-preview">
-                        <div class="receipt-row"><span>Student</span><strong><?php echo htmlspecialchars($studentName); ?></strong></div>
-                        <div class="receipt-row"><span>Grade Level</span><strong><?php echo htmlspecialchars((string)$selectedStudent['grade_level']); ?></strong></div>
-                        <div class="receipt-row"><span>School ID</span><strong><?php echo htmlspecialchars((string)$selectedStudent['student_id']); ?></strong></div>
-                        <div class="receipt-row"><span>Email</span><strong><?php echo htmlspecialchars($studentEmail !== '' ? $studentEmail : 'No email saved'); ?></strong></div>
-                        <div class="receipt-row"><span>Payment Date</span><strong><?php echo htmlspecialchars((string)$selectedPayment['payment_date']); ?></strong></div>
-                        <div class="receipt-row"><span>Receipt No.</span><strong><?php echo htmlspecialchars((string)($selectedPayment['receipt_no'] !== '' ? $selectedPayment['receipt_no'] : 'N/A')); ?></strong></div>
-                        <div class="receipt-row"><span>Total Breakdown</span><strong><?php echo htmlspecialchars(format_money((float)$selectedPayment['amount_paid'])); ?></strong></div>
-                        <div class="receipt-row"><span>Remaining Balance</span><strong><?php echo htmlspecialchars(format_money((float)$selectedPayment['balance_after'])); ?></strong></div>
-                    </div>
-
-                    <div class="receipt-breakdown">
-                        <div class="receipt-breakdown-head">
-                            <h4>Receipt Breakdown</h4>
-                            <span><?php echo count($selectedPayment['items']); ?> row(s)</span>
-                        </div>
-                        <div class="receipt-breakdown-table">
-                            <div class="receipt-breakdown-row receipt-breakdown-labels">
-                                <span>Payment Item</span>
-                                <span>Amount</span>
-                            </div>
-                            <?php foreach ($selectedPayment['items'] as $item): ?>
-                                <div class="receipt-breakdown-row">
-                                    <strong><?php echo htmlspecialchars((string)$item['label']); ?></strong>
-                                    <strong><?php echo htmlspecialchars(format_money((float)$item['amount'])); ?></strong>
-                                </div>
-                            <?php endforeach; ?>
-                        </div>
-                    </div>
-
-                    <form method="post" action="tuition_receipt_details.php" class="receipt-send-form">
-                        <input type="hidden" name="action" value="send_receipt">
-                        <input type="hidden" name="student_id" value="<?php echo htmlspecialchars((string)$selectedStudent['student_id']); ?>">
-                        <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($tuitionReceiptCsrfToken); ?>">
-                        <input type="hidden" name="payment_id" value="<?php echo (int)$selectedPayment['id']; ?>">
-                        <button type="submit" class="secondary-btn" <?php echo filter_var($studentEmail, FILTER_VALIDATE_EMAIL) ? '' : 'disabled'; ?>>
-                            <i class="fa-solid fa-paper-plane"></i>
-                            Send Receipt to Email
-                        </button>
-                    </form>
-                <?php else: ?>
-                    <div class="receipt-empty">
-                    <p>Create a breakdown receipt first, then it can be emailed to the address entered on the enrollment form.</p>
-                    </div>
-                <?php endif; ?>
-            </section>
-
             <section class="card-block history-block" id="saved-receipts">
                 <div class="block-head">
-                    <h3>Saved Receipts</h3>
-                    <p>Each saved receipt keeps the fee breakdown and can still be sent again.</p>
+                    <h3>Saved Invoices</h3>
+                    <p>Each saved invoice keeps the fee breakdown and can still be sent again.</p>
                 </div>
 
                 <div class="student-table-wrap">
@@ -1201,7 +1434,7 @@ $uploadLinkNeedsRealHost = $configuredAppUrl === '' || is_loopback_host((string)
                         <thead>
                             <tr>
                                 <th>Date</th>
-                                <th>Receipt</th>
+                                <th>Invoice</th>
                                 <th>Payment Items</th>
                                 <th>Total Breakdown</th>
                                 <th>Remaining Balance</th>
@@ -1212,7 +1445,7 @@ $uploadLinkNeedsRealHost = $configuredAppUrl === '' || is_loopback_host((string)
                         <tbody>
                             <?php if (empty($paymentHistory)): ?>
                                 <tr>
-                                    <td colspan="7">No receipts saved yet.</td>
+                                    <td colspan="7">No invoices saved yet.</td>
                                 </tr>
                             <?php else: ?>
                                 <?php foreach ($paymentHistory as $history): ?>
@@ -1220,27 +1453,27 @@ $uploadLinkNeedsRealHost = $configuredAppUrl === '' || is_loopback_host((string)
                                     <?php $historyItemNames = implode(', ', array_map(static fn($item) => (string)($item['label'] ?? ''), $history['items'])); ?>
                                     <tr class="<?php echo $isActiveReceipt ? 'active-history-row' : ''; ?>">
                                         <td>
-                                            <a class="history-link" href="tuition_receipt_details.php?student_id=<?php echo urlencode((string)$selectedStudent['student_id']); ?>&payment_id=<?php echo (int)$history['id']; ?>#saved-receipts">
+                                            <a class="history-link" href="tuition_receipt_details.php?student_id=<?php echo urlencode((string)$selectedStudent['student_id']); ?>&payment_id=<?php echo (int)$history['id']; ?>#receipt-preview">
                                                 <?php echo htmlspecialchars((string)$history['payment_date']); ?>
                                             </a>
                                         </td>
                                         <td>
-                                            <a class="history-link" href="tuition_receipt_details.php?student_id=<?php echo urlencode((string)$selectedStudent['student_id']); ?>&payment_id=<?php echo (int)$history['id']; ?>#saved-receipts">
+                                            <a class="history-link" href="tuition_receipt_details.php?student_id=<?php echo urlencode((string)$selectedStudent['student_id']); ?>&payment_id=<?php echo (int)$history['id']; ?>#receipt-preview">
                                                 <?php echo htmlspecialchars((string)($history['receipt_no'] !== '' ? $history['receipt_no'] : 'N/A')); ?>
                                             </a>
                                         </td>
                                         <td>
-                                            <a class="history-link" href="tuition_receipt_details.php?student_id=<?php echo urlencode((string)$selectedStudent['student_id']); ?>&payment_id=<?php echo (int)$history['id']; ?>#saved-receipts">
+                                            <a class="history-link" href="tuition_receipt_details.php?student_id=<?php echo urlencode((string)$selectedStudent['student_id']); ?>&payment_id=<?php echo (int)$history['id']; ?>#receipt-preview">
                                                 <?php echo htmlspecialchars($historyItemNames !== '' ? $historyItemNames : 'N/A'); ?>
                                             </a>
                                         </td>
                                         <td>
-                                            <a class="history-link" href="tuition_receipt_details.php?student_id=<?php echo urlencode((string)$selectedStudent['student_id']); ?>&payment_id=<?php echo (int)$history['id']; ?>#saved-receipts">
+                                            <a class="history-link" href="tuition_receipt_details.php?student_id=<?php echo urlencode((string)$selectedStudent['student_id']); ?>&payment_id=<?php echo (int)$history['id']; ?>#receipt-preview">
                                                 <?php echo htmlspecialchars(format_money((float)$history['amount_paid'])); ?>
                                             </a>
                                         </td>
                                         <td>
-                                            <a class="history-link" href="tuition_receipt_details.php?student_id=<?php echo urlencode((string)$selectedStudent['student_id']); ?>&payment_id=<?php echo (int)$history['id']; ?>#saved-receipts">
+                                            <a class="history-link" href="tuition_receipt_details.php?student_id=<?php echo urlencode((string)$selectedStudent['student_id']); ?>&payment_id=<?php echo (int)$history['id']; ?>#receipt-preview">
                                                 <?php echo htmlspecialchars(format_money((float)$history['balance_after'])); ?>
                                             </a>
                                         </td>
@@ -1267,26 +1500,197 @@ $uploadLinkNeedsRealHost = $configuredAppUrl === '' || is_loopback_host((string)
                     </table>
                 </div>
             </section>
+
+            <?php if ($selectedPayment): ?>
+                <section class="card-block invoice-preview-panel" id="receipt-preview">
+                    <div class="block-head">
+                        <div>
+                            <span class="eyebrow eyebrow-blue">Selected Invoice</span>
+                            <h3>Invoice Preview</h3>
+                            <p>Showing the saved invoice you selected from the table above.</p>
+                        </div>
+                        <div class="invoice-preview-actions">
+                            <button
+                                type="button"
+                                class="secondary-btn"
+                                id="selectedInvoicePrintTrigger"
+                                data-print-title="<?php echo htmlspecialchars($selectedReceiptNo); ?>"
+                            >
+                                <i class="fa-solid fa-print"></i>
+                                Print Invoice
+                            </button>
+                            <form method="post" action="tuition_receipt_details.php" class="receipt-send-form invoice-send-form">
+                                <input type="hidden" name="action" value="send_receipt">
+                                <input type="hidden" name="student_id" value="<?php echo htmlspecialchars((string)$selectedStudent['student_id']); ?>">
+                                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($tuitionReceiptCsrfToken); ?>">
+                                <input type="hidden" name="payment_id" value="<?php echo (int)$selectedPayment['id']; ?>">
+                                <button type="submit" class="primary-btn" <?php echo filter_var($studentEmail, FILTER_VALIDATE_EMAIL) ? '' : 'disabled'; ?>>
+                                    <i class="fa-solid fa-paper-plane"></i>
+                                    Send to Gmail
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+
+                    <div class="receipt-preview">
+                        <div class="invoice-sheet">
+                            <div class="invoice-top">
+                                <div class="invoice-title-block">
+                                    <h4>INVOICE</h4>
+                                    <div class="invoice-client">
+                                        <strong><?php echo htmlspecialchars($studentName); ?></strong>
+                                        <span>Student ID: <?php echo htmlspecialchars((string)$selectedStudent['student_id']); ?></span>
+                                        <span>Grade Level: <?php echo htmlspecialchars((string)$selectedStudent['grade_level']); ?></span>
+                                    </div>
+                                </div>
+
+                                <div class="invoice-header-right">
+                                    <div class="invoice-meta">
+                                        <div class="invoice-meta-row">
+                                            <span>Invoice Date</span>
+                                            <strong><?php echo htmlspecialchars($selectedPaymentDateDisplay); ?></strong>
+                                        </div>
+                                        <div class="invoice-meta-row">
+                                            <span>Invoice Number</span>
+                                            <strong><?php echo htmlspecialchars($selectedReceiptNo); ?></strong>
+                                        </div>
+                                        <div class="invoice-meta-row">
+                                            <span>Reference</span>
+                                            <strong><?php echo htmlspecialchars(trim((string)$selectedStudent['grade_level'] . ' SCHOOL YEAR ' . (string)($selectedStudent['school_year'] ?: 'N/A'))); ?></strong>
+                                        </div>
+                                    </div>
+
+                                    <div class="invoice-brand">
+                                        <img src="assets/logo.png" alt="SMARTENROLL Logo" class="invoice-brand-logo">
+                                        <div class="invoice-brand-copy">
+                                            <?php foreach ($schoolAddressLines as $line): ?>
+                                                <span><?php echo htmlspecialchars($line); ?></span>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="invoice-table-wrap">
+                                <table class="invoice-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Description</th>
+                                            <th>Quantity</th>
+                                            <th>Unit Price</th>
+                                            <th>Discount</th>
+                                            <th>Tax</th>
+                                            <th>Amount PHP</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($selectedPaymentItems as $item): ?>
+                                            <?php
+                                                $itemAmount = round((float)($item['amount'] ?? 0), 2);
+                                                $itemLabel = build_invoice_item_description($selectedStudent, $item);
+                                            ?>
+                                            <tr>
+                                                <td><?php echo htmlspecialchars($itemLabel); ?></td>
+                                                <td>1.00</td>
+                                                <td><?php echo htmlspecialchars(format_invoice_money($itemAmount)); ?></td>
+                                                <td>0.00</td>
+                                                <td>Tax on Sales</td>
+                                                <td><?php echo htmlspecialchars(format_invoice_money($itemAmount)); ?></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div class="invoice-summary-wrap">
+                                <div class="invoice-summary">
+                                    <div class="invoice-summary-row compact">
+                                        <span>Subtotal</span>
+                                        <strong><?php echo htmlspecialchars(format_invoice_money($selectedPaymentAmount)); ?></strong>
+                                    </div>
+                                    <div class="invoice-summary-row rule-top">
+                                        <span>TOTAL PHP</span>
+                                        <strong><?php echo htmlspecialchars(format_invoice_money($selectedPaymentCumulativePaid)); ?></strong>
+                                    </div>
+                                    <div class="invoice-summary-row">
+                                        <span>Less Amount Paid</span>
+                                        <strong><?php echo htmlspecialchars(format_invoice_money($selectedPaymentAmount)); ?></strong>
+                                    </div>
+                                    <div class="invoice-summary-row due">
+                                        <span>AMOUNT DUE PHP</span>
+                                        <strong><?php echo htmlspecialchars(format_invoice_money($selectedPaymentRemainingBalance)); ?></strong>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <?php if ($selectedPaymentNote !== ''): ?>
+                                <div class="invoice-note">
+                                    <strong>Payment Note</strong>
+                                    <span><?php echo htmlspecialchars($selectedPaymentNote); ?></span>
+                                </div>
+                            <?php endif; ?>
+
+                            <div class="invoice-payment-section">
+                                <div class="invoice-payment-head">
+                                    <strong>Due Date: <?php echo htmlspecialchars($selectedPaymentDueDateDisplay); ?></strong>
+                                    <span>Payment Details:</span>
+                                </div>
+                                <div class="invoice-bank-grid">
+                                    <?php foreach ($paymentDetailBlocks as $detail): ?>
+                                        <div class="invoice-bank-card">
+                                            <strong><?php echo htmlspecialchars((string)$detail['branch']); ?></strong>
+                                            <span>Account Name: <?php echo htmlspecialchars((string)$detail['account_name']); ?></span>
+                                            <span>Bank: <?php echo htmlspecialchars((string)$detail['bank']); ?></span>
+                                            <span>Account No.: <?php echo htmlspecialchars((string)$detail['account_number']); ?></span>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+
+                            <div class="invoice-footer">
+                                <?php echo htmlspecialchars($registeredOfficeLine); ?>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            <?php endif; ?>
+        </div>
         </div>
     <?php endif; ?>
 </main>
 
 <template id="selectedPaymentRowTemplate">
-    <div class="selected-payment-row" data-option="">
-        <button type="button" class="remove-selected-btn" aria-label="Remove payment row">
-            <i class="fa-solid fa-xmark"></i>
-        </button>
-        <div class="selected-payment-label">
-            <strong class="selected-item-name"></strong>
-        </div>
-        <span class="selected-suggested-amount">PHP 0.00</span>
-        <div class="selected-row-entry">
-            <span class="selected-row-status">Included</span>
-            <label class="tuition-manual-wrap is-hidden">
-                <input type="number" class="tuition-manual-input" min="0.01" step="0.01" placeholder="Enter tuition amount">
-            </label>
-        </div>
-    </div>
+    <tr class="selected-payment-row" data-option="">
+        <td class="selected-description-cell">
+            <div class="selected-description-wrap">
+                <button type="button" class="remove-selected-btn" aria-label="Remove payment row">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+                <div class="selected-payment-label">
+                    <strong class="selected-item-name"></strong>
+                    <span class="selected-row-status">Included automatically</span>
+                </div>
+            </div>
+        </td>
+        <td class="selected-row-qty">1.00</td>
+        <td class="selected-suggested-amount">
+            <span class="selected-unit-price-display">0.00</span>
+            <div class="tuition-manual-wrap is-hidden">
+                <input
+                    type="text"
+                    class="tuition-manual-input"
+                    inputmode="decimal"
+                    value="0.00"
+                    aria-label="Tuition Fee Unit Price"
+                >
+            </div>
+        </td>
+        <td class="selected-row-discount">0.00</td>
+        <td class="selected-row-tax">Tax on Sales</td>
+        <td class="selected-row-entry">
+            <strong class="selected-row-amount">0.00</strong>
+        </td>
+    </tr>
 </template>
 
 <script src="js/pay_tuition.js"></script>

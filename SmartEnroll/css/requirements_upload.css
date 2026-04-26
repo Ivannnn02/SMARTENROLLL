@@ -143,6 +143,12 @@ html {
     align-items: flex-start;
     justify-content: space-between;
     gap: 18px;
+    flex-wrap: wrap;
+}
+
+.requirements-directory-head > div:first-child {
+    flex: 1 1 320px;
+    min-width: 0;
 }
 
 .requirements-directory-head h2,
@@ -160,8 +166,12 @@ html {
 }
 
 .requirements-search {
+    grid-area: search;
     position: relative;
-    width: min(360px, 100%);
+    width: 100%;
+    min-width: 0;
+    max-width: 360px;
+    justify-self: end;
 }
 
 .requirements-controls {
@@ -170,13 +180,20 @@ html {
     gap: 12px;
     flex-wrap: wrap;
     justify-content: flex-end;
+    flex: 1 1 760px;
+    min-width: 0;
 }
 
 .requirements-filters-form {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(190px, 240px) minmax(260px, 360px);
+    grid-template-areas: "print filter search";
     align-items: center;
     gap: 12px;
-    flex-wrap: wrap;
+    flex: 1 1 620px;
+    width: 100%;
+    min-width: 0;
+    justify-content: end;
 }
 
 .requirements-search i {
@@ -191,26 +208,48 @@ html {
 .file-input-wrap input {
     width: 100%;
     border: 1px solid #d7dfe9;
-    border-radius: 16px;
-    padding: 14px 16px;
-    font-size: 15px;
+    border-radius: 14px;
+    padding: 11px 14px;
+    min-height: 42px;
+    font-size: 14px;
     font-family: 'Poppins', sans-serif;
     background: #fbfcfe;
 }
 
 .requirements-search input {
-    padding-left: 44px;
+    padding-left: 40px;
 }
 
 .requirements-filter-select {
-    min-width: 220px;
+    min-width: 0;
+    width: 100%;
     border: 1px solid #d7dfe9;
-    border-radius: 16px;
-    padding: 14px 16px;
-    font-size: 15px;
+    border-radius: 14px;
+    padding: 11px 14px;
+    min-height: 42px;
+    font-size: 14px;
     font-family: 'Poppins', sans-serif;
     background: #fbfcfe;
     color: #16345d;
+}
+
+.requirements-filter-wrap {
+    grid-area: filter;
+    position: relative;
+    min-width: 0;
+}
+
+.requirements-filter-wrap > i {
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #98a2b3;
+    pointer-events: none;
+}
+
+.requirements-filter-wrap .requirements-filter-select {
+    padding-left: 40px;
 }
 
 .requirements-search input:focus,
@@ -226,23 +265,50 @@ html {
     align-items: center;
     justify-content: center;
     gap: 8px;
-    min-height: 48px;
-    padding: 12px 18px;
-    border-radius: 16px;
+    min-height: 42px;
+    padding: 10px 14px;
+    border-radius: 14px;
     border: 1px solid #cfe0f8;
     background: #eef6ff;
     color: #16345d;
     font-weight: 700;
-    font-size: 14px;
+    font-size: 13px;
     text-decoration: none;
     cursor: pointer;
     font-family: 'Poppins', sans-serif;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.requirements-toolbar-btn-icon {
+    width: 42px;
+    min-width: 42px;
+    padding: 0;
+    gap: 0;
+}
+
+.requirements-filters-form .requirements-toolbar-btn-print {
+    grid-area: print;
 }
 
 .requirements-toolbar-btn-print {
     background: linear-gradient(135deg, #16345d, #2d9cdb);
     color: #ffffff;
     border-color: #2d9cdb;
+}
+
+@media (max-width: 1180px) {
+    .requirements-controls {
+        width: 100%;
+        justify-content: stretch;
+    }
+
+    .requirements-filters-form {
+        grid-template-columns: auto minmax(200px, 240px) minmax(0, 1fr);
+        grid-template-areas:
+            "print filter search";
+        flex: 1 1 100%;
+    }
 }
 
 .requirements-print-summary {
@@ -650,12 +716,22 @@ html {
 
     .requirements-search {
         width: 100%;
+        max-width: none;
+        justify-self: stretch;
     }
 
     .requirements-controls,
     .requirements-filters-form {
         width: 100%;
         justify-content: stretch;
+    }
+
+    .requirements-filters-form {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+            "print"
+            "filter"
+            "search";
     }
 
     .requirements-filter-select,
@@ -687,6 +763,11 @@ html {
 }
 
 @media print {
+    @page {
+        size: A4;
+        margin: 10mm;
+    }
+
     body {
         background: #ffffff !important;
     }
@@ -696,14 +777,16 @@ html {
         padding: 0;
     }
 
-    .requirements-hero,
-    .requirements-directory,
-    .requirements-print-summary {
+    .requirements-directory {
         box-shadow: none;
         border: 1px solid #d7dfe9;
     }
 
     .back-left,
+    .requirements-hero,
+    .requirements-print-summary,
+    .requirements-directory-head,
+    .requirements-alert,
     .requirements-controls,
     .requirements-pagination,
     .requirements-open-btn,
@@ -712,16 +795,56 @@ html {
     }
 
     .requirements-directory {
-        margin-top: 12px;
-        padding: 16px;
+        margin-top: 0;
+        padding: 0;
+        border: 0;
     }
 
     .requirements-directory-table {
-        gap: 8px;
+        margin-top: 0;
+        gap: 4px;
     }
 
     .requirements-student-row {
+        grid-template-columns: 86px minmax(150px, 1.35fr) minmax(125px, 1fr) 72px 82px;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 0;
+        background: #ffffff;
+        color: #000000;
+        border: 1px solid #d7dfe9;
+        box-shadow: none;
+        text-decoration: none;
+        font-size: 11px;
+        line-height: 1.2;
         break-inside: avoid;
         page-break-inside: avoid;
+    }
+
+    .requirements-student-row:hover {
+        transform: none;
+        border-color: #d7dfe9;
+        box-shadow: none;
+    }
+
+    .requirements-student-row span,
+    .requirements-student-row strong {
+        font-size: 11px;
+        line-height: 1.2;
+    }
+
+    .student-row-name {
+        font-size: 12px;
+    }
+
+    .student-row-requirement-status {
+        gap: 4px;
+        padding: 4px 6px;
+        border-radius: 8px;
+    }
+
+    .student-row-requirement-tag {
+        padding: 3px 6px;
+        font-size: 10px;
     }
 }

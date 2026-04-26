@@ -513,6 +513,83 @@
     font-weight: 600;
 }
 
+.edit-choice-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px;
+}
+
+.edit-choice-option {
+    position: relative;
+    display: flex;
+}
+
+.edit-choice-option input[type="radio"] {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.edit-choice-button {
+    width: 100%;
+    min-height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid #d0d5dd;
+    background: #ffffff;
+    color: #19325a;
+    font-size: 14px;
+    font-weight: 600;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.edit-choice-option:hover .edit-choice-button {
+    transform: translateY(-2px);
+    border-color: #1e88e5;
+    box-shadow: 0 10px 20px rgba(30, 136, 229, 0.12);
+}
+
+.edit-choice-option input[type="radio"]:checked + .edit-choice-button {
+    border-color: #1e88e5;
+    background: linear-gradient(135deg, #1e88e5, #19325a);
+    color: #ffffff;
+    box-shadow: 0 12px 24px rgba(30, 136, 229, 0.2);
+}
+
+.edit-choice-option input[type="radio"]:focus-visible + .edit-choice-button {
+    outline: 3px solid rgba(30, 136, 229, 0.2);
+    outline-offset: 2px;
+}
+
+.edit-radio-inline-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    min-height: 44px;
+    align-items: center;
+}
+
+.edit-radio-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #344054;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.edit-radio-inline input[type="radio"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: #1e88e5;
+}
+
 .settings-inline-editor {
     display: flex;
     align-items: center;

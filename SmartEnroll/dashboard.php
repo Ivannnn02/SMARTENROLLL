@@ -48,6 +48,10 @@ if ($profileFirstName !== '') {
                 <i class="fa-solid fa-clipboard-list"></i>
                 <span>Edit Enrollment Form</span>
             </a>
+            <a href="edit_tuition_fee.php" class="dashboard-profile-item">
+                <i class="fa-solid fa-coins"></i>
+                <span>Edit Tuition Fee</span>
+            </a>
             <a href="dashboard.php" class="dashboard-profile-item">
                 <i class="fa-solid fa-id-badge"></i>
                 <span>Account Details</span>

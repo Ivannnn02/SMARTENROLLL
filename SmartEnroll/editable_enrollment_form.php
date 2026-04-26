@@ -150,6 +150,13 @@ $customFieldSectionChoices = array_values(array_filter(
 ));
 $readOnly = ['school_year'];
 $skip = ['id', 'student_id', 'created_at'];
+$hiddenOtherSavedFields = [
+    'grade_level',
+    'school_year',
+    'enrollment_status',
+    'requirements_status',
+    'payment_status',
+];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form_action'] ?? '') === 'save_grade_levels') {
     try {
@@ -357,6 +364,17 @@ try {
 
     $sectionMap = smartenroll_build_sections($columns, null, ['grade_level', 'school_year']);
     unset($sectionMap['Grade Level']);
+
+    if (isset($sectionMap['Other Saved Fields'])) {
+        $sectionMap['Other Saved Fields'] = array_values(array_filter(
+            $sectionMap['Other Saved Fields'],
+            static fn(string $field): bool => !in_array($field, $hiddenOtherSavedFields, true)
+        ));
+
+        if ($sectionMap['Other Saved Fields'] === []) {
+            unset($sectionMap['Other Saved Fields']);
+        }
+    }
 
     foreach ($columns as $column) {
         $formValues[$column] = isset($formValues[$column]) ? trim((string)$formValues[$column]) : '';
@@ -598,7 +616,7 @@ if ($errorMessage === 'This grade level already exists' || str_starts_with($erro
                             <?php if (in_array($col, $skip, true)) { continue; } ?>
                             <?php $val = (string)($formValues[$col] ?? ''); ?>
                             <?php $customField = $customFieldMap[$col] ?? null; ?>
-                            <label class="edit-item">
+                            <div class="edit-item">
                                 <span class="detail-label <?php echo isset($builtinFieldKeys[$col]) ? 'field-label-with-actions' : ''; ?>">
                                     <span><?php echo htmlspecialchars(smartenroll_field_labelize($col, $customFieldMap)); ?></span>
                                     <?php if (isset($builtinFieldKeys[$col])): ?>
@@ -665,31 +683,32 @@ if ($errorMessage === 'This grade level already exists' || str_starts_with($erro
                                         <?php endforeach; ?>
                                     </select>
                                 <?php elseif ($col === 'guardian_type'): ?>
-                                    <select name="guardian_type">
+                                    <div class="edit-radio-inline-group">
                                         <?php
-                                            $guardianOptions = ['' => 'Select', 'other' => 'Other', 'mother' => 'Mother', 'father' => 'Father'];
+                                            $guardianOptions = ['other' => 'Other', 'mother' => 'Mother', 'father' => 'Father'];
                                             foreach ($guardianOptions as $optVal => $optLabel):
-                                                $selected = $val === $optVal ? 'selected' : '';
+                                                $checked = ($val === '' && $optVal === 'other') || $val === $optVal ? 'checked' : '';
                                         ?>
-                                            <option value="<?php echo htmlspecialchars($optVal); ?>" <?php echo $selected; ?>>
-                                                <?php echo htmlspecialchars($optLabel); ?>
-                                            </option>
+                                            <label class="edit-radio-inline">
+                                                <input type="radio" name="guardian_type" value="<?php echo htmlspecialchars($optVal); ?>" <?php echo $checked; ?>>
+                                                <span><?php echo htmlspecialchars($optLabel); ?></span>
+                                            </label>
                                         <?php endforeach; ?>
-                                    </select>
+                                    </div>
                                 <?php elseif ($col === 'grade_level'): ?>
-                                    <select name="grade_level">
-                                        <option value="">Select Grade Level</option>
+                                    <div class="edit-choice-grid" aria-label="Grade Level">
                                         <?php foreach ($gradeLevels as $gradeLevel): ?>
                                             <?php
                                                 $optVal = (string)$gradeLevel['grade_key'];
                                                 $optLabel = (string)$gradeLevel['grade_label'];
-                                                $selected = $val === $optVal ? 'selected' : '';
+                                                $checked = $val === $optVal ? 'checked' : '';
                                             ?>
-                                            <option value="<?php echo htmlspecialchars($optVal); ?>" <?php echo $selected; ?>>
-                                                <?php echo htmlspecialchars($optLabel); ?>
-                                            </option>
+                                            <label class="edit-choice-option">
+                                                <input type="radio" name="grade_level" value="<?php echo htmlspecialchars($optVal); ?>" <?php echo $checked; ?>>
+                                                <span class="edit-choice-button"><?php echo htmlspecialchars($optLabel); ?></span>
+                                            </label>
                                         <?php endforeach; ?>
-                                    </select>
+                                    </div>
                                 <?php elseif (in_array($col, ['guardian_lname', 'guardian_fname', 'guardian_mname', 'guardian_occ', 'guardian_contact'], true)): ?>
                                     <input
                                         type="<?php echo htmlspecialchars(smartenroll_input_type_for($col, $customFieldMap)); ?>"
@@ -698,17 +717,18 @@ if ($errorMessage === 'This grade level already exists' || str_starts_with($erro
                                         data-guardian-field="<?php echo htmlspecialchars($col); ?>"
                                     >
                                 <?php elseif ($col === 'medication'): ?>
-                                    <select name="medication">
+                                    <div class="edit-radio-inline-group">
                                         <?php
-                                            $medicationOptions = ['' => 'Select', 'yes' => 'Yes', 'no' => 'No'];
+                                            $medicationOptions = ['yes' => 'Yes', 'no' => 'No'];
                                             foreach ($medicationOptions as $optVal => $optLabel):
-                                                $selected = $val === $optVal ? 'selected' : '';
+                                                $checked = ($val === '' && $optVal === 'no') || $val === $optVal ? 'checked' : '';
                                         ?>
-                                            <option value="<?php echo htmlspecialchars($optVal); ?>" <?php echo $selected; ?>>
-                                                <?php echo htmlspecialchars($optLabel); ?>
-                                            </option>
+                                            <label class="edit-radio-inline">
+                                                <input type="radio" name="medication" value="<?php echo htmlspecialchars($optVal); ?>" <?php echo $checked; ?>>
+                                                <span><?php echo htmlspecialchars($optLabel); ?></span>
+                                            </label>
                                         <?php endforeach; ?>
-                                    </select>
+                                    </div>
                                 <?php elseif (in_array($col, ['dob', 'completion_date'], true)): ?>
                                     <input
                                         type="date"
@@ -727,7 +747,7 @@ if ($errorMessage === 'This grade level already exists' || str_starts_with($erro
                                         <?php echo in_array($col, $readOnly, true) ? 'readonly' : ''; ?>
                                     >
                                 <?php endif; ?>
-                            </label>
+                            </div>
                         <?php endforeach; ?>
                     </div>
                 </div>
@@ -1232,8 +1252,8 @@ if (completionDateInput && schoolYearInput) {
     });
 }
 
-const guardianType = document.querySelector('select[name="guardian_type"]');
-const medicationSelect = document.querySelector('select[name="medication"]');
+const guardianTypeInputs = Array.from(document.querySelectorAll('input[name="guardian_type"]'));
+const medicationInputs = Array.from(document.querySelectorAll('input[name="medication"]'));
 const medicationDetailsInput = document.querySelector('[name="medication_details"]');
 const guardianMap = {
     mother: {
@@ -1271,37 +1291,45 @@ function setGuardianReadOnly(readOnly) {
     });
 }
 
-if (guardianType) {
-    if (guardianType.value === 'mother' || guardianType.value === 'father') {
-        setGuardianFrom(guardianType.value);
-        setGuardianReadOnly(true);
-    } else {
-        setGuardianReadOnly(false);
-    }
+function getSelectedRadioValue(inputs) {
+    const selected = inputs.find((input) => input.checked);
+    return selected ? selected.value : '';
+}
 
-    guardianType.addEventListener('change', () => {
-        if (guardianType.value === 'mother' || guardianType.value === 'father') {
-            setGuardianFrom(guardianType.value);
+if (guardianTypeInputs.length > 0) {
+    const syncGuardianType = () => {
+        const selectedGuardianType = getSelectedRadioValue(guardianTypeInputs);
+
+        if (selectedGuardianType === 'mother' || selectedGuardianType === 'father') {
+            setGuardianFrom(selectedGuardianType);
             setGuardianReadOnly(true);
         } else {
             setGuardianReadOnly(false);
         }
+    };
+
+    syncGuardianType();
+
+    guardianTypeInputs.forEach((input) => {
+        input.addEventListener('change', syncGuardianType);
     });
 }
 
 function syncMedicationField() {
-    if (!medicationSelect || !medicationDetailsInput) return;
+    if (medicationInputs.length === 0 || !medicationDetailsInput) return;
 
-    const enabled = medicationSelect.value === 'yes';
+    const enabled = getSelectedRadioValue(medicationInputs) === 'yes';
     medicationDetailsInput.disabled = !enabled;
     if (!enabled) {
         medicationDetailsInput.value = '';
     }
 }
 
-if (medicationSelect && medicationDetailsInput) {
+if (medicationInputs.length > 0 && medicationDetailsInput) {
     syncMedicationField();
-    medicationSelect.addEventListener('change', syncMedicationField);
+    medicationInputs.forEach((input) => {
+        input.addEventListener('change', syncMedicationField);
+    });
 }
 </script>
 </body>

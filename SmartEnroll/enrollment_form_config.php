@@ -276,6 +276,55 @@ function smartenroll_get_grade_tuition_map(?mysqli $conn = null): array
     return $map;
 }
 
+function smartenroll_normalize_grade_value(string $value): string
+{
+    $value = trim($value);
+    $value = preg_replace('/\s+/', ' ', $value);
+    return strtolower((string)$value);
+}
+
+function smartenroll_get_grade_level_lookup(?mysqli $conn = null): array
+{
+    $lookup = [
+        'by_key' => [],
+        'by_label' => [],
+    ];
+
+    foreach (smartenroll_get_grade_levels($conn) as $row) {
+        $normalizedKey = smartenroll_normalize_grade_value((string)($row['grade_key'] ?? ''));
+        if ($normalizedKey !== '') {
+            $lookup['by_key'][$normalizedKey] = $row;
+        }
+
+        $normalizedLabel = smartenroll_normalize_grade_value((string)($row['grade_label'] ?? ''));
+        if ($normalizedLabel !== '') {
+            $lookup['by_label'][$normalizedLabel] = $row;
+        }
+    }
+
+    return $lookup;
+}
+
+function smartenroll_find_grade_level(string $gradeValue, ?mysqli $conn = null, ?array $lookup = null): ?array
+{
+    $normalizedValue = smartenroll_normalize_grade_value($gradeValue);
+    if ($normalizedValue === '') {
+        return null;
+    }
+
+    $resolvedLookup = $lookup ?? smartenroll_get_grade_level_lookup($conn);
+
+    return $resolvedLookup['by_key'][$normalizedValue]
+        ?? $resolvedLookup['by_label'][$normalizedValue]
+        ?? null;
+}
+
+function smartenroll_resolve_grade_tuition_fee(string $gradeValue, ?mysqli $conn = null, ?array $lookup = null): ?float
+{
+    $row = smartenroll_find_grade_level($gradeValue, $conn, $lookup);
+    return $row !== null ? round((float)($row['tuition_fee'] ?? 0), 2) : null;
+}
+
 function smartenroll_get_grade_breakdown_map(?mysqli $conn = null): array
 {
     $tuitionMap = smartenroll_get_grade_tuition_map($conn);
@@ -302,4 +351,126 @@ function smartenroll_get_grade_breakdown_map(?mysqli $conn = null): array
     }
 
     return $result;
+}
+
+function smartenroll_resolve_grade_breakdown(string $gradeValue, ?mysqli $conn = null, ?array $lookup = null): array
+{
+    $row = smartenroll_find_grade_level($gradeValue, $conn, $lookup);
+    if ($row === null) {
+        return [];
+    }
+
+    $gradeKey = (string)($row['grade_key'] ?? '');
+    $tuitionFee = round((float)($row['tuition_fee'] ?? 0), 2);
+    $template = smartenroll_grade_breakdown_templates()[$gradeKey] ?? ['Tuition Fee' => $tuitionFee];
+    $fixedTotal = 0.0;
+
+    foreach ($template as $label => $amount) {
+        if ($label !== 'Tuition Fee') {
+            $fixedTotal += (float)$amount;
+        }
+    }
+
+    if ($fixedTotal >= $tuitionFee) {
+        return ['Tuition Fee' => $tuitionFee];
+    }
+
+    $template['Tuition Fee'] = round($tuitionFee - $fixedTotal, 2);
+    return $template;
+}
+
+function smartenroll_sync_tuition_payment_totals(?mysqli $conn = null): int
+{
+    $ownsConnection = false;
+    $db = smartenroll_grade_level_connection($conn, $ownsConnection);
+
+    try {
+        $tableCheck = $db->query("SHOW TABLES LIKE 'tuition_payments'");
+        if (!$tableCheck || $tableCheck->num_rows === 0) {
+            if ($tableCheck) {
+                $tableCheck->close();
+            }
+            return 0;
+        }
+        $tableCheck->close();
+
+        $rows = [];
+        $result = $db->query(
+            "SELECT
+                tp.id,
+                tp.enrollment_id,
+                tp.student_id,
+                COALESCE(tp.school_year, '') AS school_year,
+                COALESCE(e.grade_level, tp.grade_level, '') AS current_grade_level,
+                COALESCE(tp.grade_level, '') AS stored_grade_level,
+                tp.tuition_fee,
+                tp.amount_paid,
+                tp.balance_after,
+                tp.payment_date
+             FROM tuition_payments tp
+             LEFT JOIN enrollments e ON e.id = tp.enrollment_id
+             ORDER BY tp.enrollment_id ASC, tp.student_id ASC, school_year ASC, tp.payment_date ASC, tp.id ASC"
+        );
+
+        while ($row = $result->fetch_assoc()) {
+            $rows[] = $row;
+        }
+        $result->close();
+
+        if ($rows === []) {
+            return 0;
+        }
+
+        $lookup = smartenroll_get_grade_level_lookup($db);
+        $runningByGroup = [];
+        $updated = 0;
+        $updateStmt = $db->prepare(
+            "UPDATE tuition_payments
+             SET grade_level = ?, tuition_fee = ?, balance_after = ?
+             WHERE id = ?"
+        );
+
+        foreach ($rows as $row) {
+            $enrollmentId = (int)($row['enrollment_id'] ?? 0);
+            $studentId = trim((string)($row['student_id'] ?? ''));
+            $schoolYear = trim((string)($row['school_year'] ?? ''));
+            $groupKey = ($enrollmentId > 0 ? 'enrollment:' . $enrollmentId : 'student:' . $studentId) . '|' . $schoolYear;
+
+            if (!array_key_exists($groupKey, $runningByGroup)) {
+                $runningByGroup[$groupKey] = 0.0;
+            }
+
+            $resolvedGradeLevel = trim((string)($row['current_grade_level'] ?? ''));
+            $storedGradeLevel = trim((string)($row['stored_grade_level'] ?? ''));
+            if ($resolvedGradeLevel === '') {
+                $resolvedGradeLevel = $storedGradeLevel;
+            }
+
+            $resolvedTuitionFee = smartenroll_resolve_grade_tuition_fee($resolvedGradeLevel, $db, $lookup);
+            $tuitionFee = $resolvedTuitionFee ?? round((float)($row['tuition_fee'] ?? 0), 2);
+
+            $runningByGroup[$groupKey] += (float)($row['amount_paid'] ?? 0);
+            $computedBalance = max(0, round($tuitionFee - $runningByGroup[$groupKey], 2));
+            $storedTuitionFee = round((float)($row['tuition_fee'] ?? 0), 2);
+            $storedBalance = round((float)($row['balance_after'] ?? 0), 2);
+
+            if (
+                abs($tuitionFee - $storedTuitionFee) >= 0.01 ||
+                abs($computedBalance - $storedBalance) >= 0.01 ||
+                ($resolvedGradeLevel !== '' && $resolvedGradeLevel !== $storedGradeLevel)
+            ) {
+                $rowId = (int)($row['id'] ?? 0);
+                $updateStmt->bind_param('sddi', $resolvedGradeLevel, $tuitionFee, $computedBalance, $rowId);
+                $updateStmt->execute();
+                $updated++;
+            }
+        }
+
+        $updateStmt->close();
+        return $updated;
+    } finally {
+        if ($ownsConnection) {
+            $db->close();
+        }
+    }
 }

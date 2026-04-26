@@ -10,6 +10,19 @@ smartenroll_require_role('finance');
 $gradeLevels = smartenroll_get_grade_levels();
 $customFieldsBySection = smartenroll_custom_fields_by_section();
 $customFieldMap = smartenroll_get_field_label_map();
+$builtinFieldMap = smartenroll_builtin_field_row_map();
+$isBuiltinActive = static fn(string $fieldKey): bool => (int)($builtinFieldMap[$fieldKey]['is_active'] ?? 1) === 1;
+$builtinLabel = static fn(string $fieldKey): string => smartenroll_field_labelize($fieldKey, $customFieldMap);
+$fieldGroupClass = static fn(string $fieldKey): string => $isBuiltinActive($fieldKey) ? '' : ' form-group-hidden';
+$fieldDisabledAttr = static fn(string $fieldKey): string => $isBuiltinActive($fieldKey) ? '' : 'disabled';
+$fieldReadonlyAttr = static fn(string $fieldKey, bool $readOnlyWhenActive = false): string => $isBuiltinActive($fieldKey)
+    ? ($readOnlyWhenActive ? 'readonly' : '')
+    : 'disabled';
+$fieldLabelsForJs = [];
+
+foreach ($builtinFieldMap as $fieldKey => $fieldRow) {
+    $fieldLabelsForJs[$fieldKey] = (string)$builtinLabel((string)$fieldKey);
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -54,10 +67,10 @@ $customFieldMap = smartenroll_get_field_label_map();
 
 <form id="enrollmentForm" action="save_enrollment.php" method="POST">
 
-    <div class="form-top">
+    <div class="form-top<?php echo $isBuiltinActive('completion_date') ? '' : ' form-group-hidden'; ?>">
         <div class="completion-date">
-    <label>Date of Completion:</label>
-    <input type="date" id="completionDate" name="completion_date">
+    <label><?php echo htmlspecialchars($builtinLabel('completion_date')); ?>:</label>
+    <input type="date" id="completionDate" name="completion_date" <?php echo $fieldDisabledAttr('completion_date'); ?>>
 </div>
     </div>
 
@@ -90,18 +103,21 @@ $customFieldMap = smartenroll_get_field_label_map();
 
 
         <!-- GRADE LEVEL -->
+        <?php if ($isBuiltinActive('grade_level') || !empty($customFieldsBySection['Grade Level'])): ?>
         <section class="form-section">
         
-            <h2>A. Grade Level</h2>
+            <h2>A. <?php echo htmlspecialchars($builtinLabel('grade_level')); ?></h2>
 
-            <div class="ch-grid">
-                <?php foreach ($gradeLevels as $gradeLevel): ?>
-                    <label class="grade-level-option">
-                        <input type="radio" name="grade_level" value="<?php echo htmlspecialchars((string)$gradeLevel['grade_key']); ?>">
-                        <span class="grade-level-button"><?php echo htmlspecialchars((string)$gradeLevel['grade_label']); ?></span>
-                    </label>
-                <?php endforeach; ?>
-            </div>
+            <?php if ($isBuiltinActive('grade_level')): ?>
+                <div class="ch-grid">
+                    <?php foreach ($gradeLevels as $gradeLevel): ?>
+                        <label class="grade-level-option">
+                            <input type="radio" name="grade_level" value="<?php echo htmlspecialchars((string)$gradeLevel['grade_key']); ?>">
+                            <span class="grade-level-button"><?php echo htmlspecialchars((string)$gradeLevel['grade_label']); ?></span>
+                        </label>
+                    <?php endforeach; ?>
+                </div>
+            <?php endif; ?>
 
             <?php if (!empty($customFieldsBySection['Grade Level'])): ?>
                 <?php $gradeLevelGridClass = count($customFieldsBySection['Grade Level']) === 1 ? 'one' : 'two'; ?>
@@ -127,6 +143,7 @@ $customFieldMap = smartenroll_get_field_label_map();
                 </div>
             <?php endif; ?>
         </section>
+        <?php endif; ?>
 
         <!-- LEARNER INFO -->
         <section class="form-section">
@@ -134,28 +151,28 @@ $customFieldMap = smartenroll_get_field_label_map();
 
             <!-- ROW 1 -->
             <div class="form-grid four">
-                <div class="form-group">
-                    <label>Last Name</label>
-                    <input type="text" placeholder="Last Name" name="learner_lname" >
+                <div class="form-group<?php echo $fieldGroupClass('learner_lname'); ?>">
+                    <label><?php echo htmlspecialchars($builtinLabel('learner_lname')); ?></label>
+                    <input type="text" placeholder="<?php echo htmlspecialchars($builtinLabel('learner_lname')); ?>" name="learner_lname" <?php echo $fieldDisabledAttr('learner_lname'); ?> >
 
                 </div>
 
-                <div class="form-group">
-                    <label>First Name</label>
-                    <input type="text" placeholder="First Name" name="learner_fname">
+                <div class="form-group<?php echo $fieldGroupClass('learner_fname'); ?>">
+                    <label><?php echo htmlspecialchars($builtinLabel('learner_fname')); ?></label>
+                    <input type="text" placeholder="<?php echo htmlspecialchars($builtinLabel('learner_fname')); ?>" name="learner_fname" <?php echo $fieldDisabledAttr('learner_fname'); ?>>
 
                 </div>
 
-                <div class="form-group">
-                    <label>Middle Name</label>
-                    <input type="text" placeholder="Middle Name" name="learner_mname">
+                <div class="form-group<?php echo $fieldGroupClass('learner_mname'); ?>">
+                    <label><?php echo htmlspecialchars($builtinLabel('learner_mname')); ?></label>
+                    <input type="text" placeholder="<?php echo htmlspecialchars($builtinLabel('learner_mname')); ?>" name="learner_mname" <?php echo $fieldDisabledAttr('learner_mname'); ?>>
 
 
                 </div>
 
-                <div class="form-group">
-                    <label>Extension Name</label>
-                <select name="learner_ext">
+                <div class="form-group<?php echo $fieldGroupClass('learner_ext'); ?>">
+                    <label><?php echo htmlspecialchars($builtinLabel('learner_ext')); ?></label>
+                <select name="learner_ext" <?php echo $fieldDisabledAttr('learner_ext'); ?>>
                         <option value="">None</option>
                         <option value="Jr">Jr.</option>
                         <option value="Sr">Sr.</option>
@@ -167,14 +184,14 @@ $customFieldMap = smartenroll_get_field_label_map();
 
             <!-- ROW 2 -->
             <div class="form-grid one">
-                <div class="form-group">
-                    <label>Nickname</label>
-                    <input type="text" placeholder="Nickname" name="nickname">
+                <div class="form-group<?php echo $fieldGroupClass('nickname'); ?>">
+                    <label><?php echo htmlspecialchars($builtinLabel('nickname')); ?></label>
+                    <input type="text" placeholder="<?php echo htmlspecialchars($builtinLabel('nickname')); ?>" name="nickname" <?php echo $fieldDisabledAttr('nickname'); ?>>
 
                 </div>
-    <div class="form-group">
-            <label>Sex</label>
-            <select name="sex">
+    <div class="form-group<?php echo $fieldGroupClass('sex'); ?>">
+            <label><?php echo htmlspecialchars($builtinLabel('sex')); ?></label>
+            <select name="sex" <?php echo $fieldDisabledAttr('sex'); ?>>
                 <option value="">Select</option>
                 <option value="Male">Male</option>
                 <option value="Female">Female</option>
@@ -184,8 +201,8 @@ $customFieldMap = smartenroll_get_field_label_map();
 
             <!-- ROW 3 -->
             <div class="form-grid two">
-                <div class="form-group">
-        <label>Date of Birth</label>
+                <div class="form-group<?php echo $fieldGroupClass('dob'); ?>">
+        <label><?php echo htmlspecialchars($builtinLabel('dob')); ?></label>
 
         <div class="date-wrapper">
         <input
@@ -195,6 +212,7 @@ $customFieldMap = smartenroll_get_field_label_map();
             class="date-input"
             placeholder="MM / DD / YYYY"
             autocomplete="off"
+            <?php echo $fieldDisabledAttr('dob'); ?>
         >
         <span class="calendar-icon" id="calendarBtn">
             <i class="fas fa-calendar-alt"></i>
@@ -217,27 +235,27 @@ $customFieldMap = smartenroll_get_field_label_map();
 
     </div>
 
-                <div class="form-group">
-                    <label>Age</label>
-                    <input type="number" id="age" name="age" readonly>
+                <div class="form-group<?php echo $fieldGroupClass('age'); ?>">
+                    <label><?php echo htmlspecialchars($builtinLabel('age')); ?></label>
+                    <input type="number" id="age" name="age" <?php echo $fieldReadonlyAttr('age', true); ?>>
                 </div>
             </div>
 
             <!-- ROW 4 -->
             <div class="form-grid three">
-                <div class="form-group">
-                    <label>Mother Tongue</label>
-                    <input type="text" placeholder="Mother Tongue" name="mother_tongue">
+                <div class="form-group<?php echo $fieldGroupClass('mother_tongue'); ?>">
+                    <label><?php echo htmlspecialchars($builtinLabel('mother_tongue')); ?></label>
+                    <input type="text" placeholder="<?php echo htmlspecialchars($builtinLabel('mother_tongue')); ?>" name="mother_tongue" <?php echo $fieldDisabledAttr('mother_tongue'); ?>>
                 </div>
 
-                <div class="form-group">
-                    <label>Religion</label>
-                    <input type="text" placeholder="Religion" name="religion">
+                <div class="form-group<?php echo $fieldGroupClass('religion'); ?>">
+                    <label><?php echo htmlspecialchars($builtinLabel('religion')); ?></label>
+                    <input type="text" placeholder="<?php echo htmlspecialchars($builtinLabel('religion')); ?>" name="religion" <?php echo $fieldDisabledAttr('religion'); ?>>
                 </div>
 
-                <div class="form-group">
-                    <label>Email Address</label>
-                    <input type="email"placeholder="Email Address" name="email">
+                <div class="form-group<?php echo $fieldGroupClass('email'); ?>">
+                    <label><?php echo htmlspecialchars($builtinLabel('email')); ?></label>
+                    <input type="email" placeholder="<?php echo htmlspecialchars($builtinLabel('email')); ?>" name="email" <?php echo $fieldDisabledAttr('email'); ?>>
                 </div>
             </div>
 
@@ -270,26 +288,26 @@ $customFieldMap = smartenroll_get_field_label_map();
 
         <!-- ROW 1 -->
         <div class="form-grid three">
-            <div class="form-group">
-                <label>Province</label>
-               <select id="province" name="province_codes">
+            <div class="form-group<?php echo $fieldGroupClass('province'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('province')); ?></label>
+               <select id="province" name="province_codes" <?php echo $fieldDisabledAttr('province'); ?>>
                     <option value="">Select Province</option>
                 </select>
-                <input type="hidden" name="province" id="province_name">
+                <input type="hidden" name="province" id="province_name" <?php echo $fieldDisabledAttr('province'); ?>>
             </div>
-        <div class="form-group">
-            <label>Municipality / City</label>
+        <div class="form-group<?php echo $fieldGroupClass('municipality'); ?>">
+            <label><?php echo htmlspecialchars($builtinLabel('municipality')); ?></label>
 
                 <select id="municipality" name="municipality_code" disabled>
                 <option value="">Select Municipality</option>
             </select>
 
-        <input type="hidden" name="municipality" id="municipality_name">
+        <input type="hidden" name="municipality" id="municipality_name" <?php echo $fieldDisabledAttr('municipality'); ?>>
         </div>
 
 
-            <div class="form-group">
-                <label>Barangay</label>
+            <div class="form-group<?php echo $fieldGroupClass('barangay'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('barangay')); ?></label>
                 <select id="barangay" name="barangay" disabled>
                     <option value="">Select Barangay</option>
                 </select>
@@ -298,9 +316,9 @@ $customFieldMap = smartenroll_get_field_label_map();
 
         <!-- ROW 2 -->
         <div class="form-grid one">
-            <div class="form-group">
-                <label>House No. / Street / Bldg. / Subd.</label>
-                <input type="text" name="street"placeholder="House No., Street Name">
+            <div class="form-group<?php echo $fieldGroupClass('street'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('street')); ?></label>
+                <input type="text" name="street" placeholder="<?php echo htmlspecialchars($builtinLabel('street')); ?>" <?php echo $fieldDisabledAttr('street'); ?>>
             </div>
         </div>
 
@@ -335,31 +353,31 @@ $customFieldMap = smartenroll_get_field_label_map();
         <h2>Father's Information</h2>
 
         <div class="form-grid three">
-            <div class="form-group">
-                <label>Last Name</label>
-                <input type="text" name="father_lname"placeholder="Last Name">
+            <div class="form-group<?php echo $fieldGroupClass('father_lname'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('father_lname')); ?></label>
+                <input type="text" name="father_lname" placeholder="<?php echo htmlspecialchars($builtinLabel('father_lname')); ?>" <?php echo $fieldDisabledAttr('father_lname'); ?>>
             </div>
-            <div class="form-group">
-                <label>First Name</label>
-                <input type="text" name="father_fname"placeholder="First Name">
+            <div class="form-group<?php echo $fieldGroupClass('father_fname'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('father_fname')); ?></label>
+                <input type="text" name="father_fname" placeholder="<?php echo htmlspecialchars($builtinLabel('father_fname')); ?>" <?php echo $fieldDisabledAttr('father_fname'); ?>>
             </div>
-            <div class="form-group">
-                <label>Middle Name</label>
-                <input type="text" name="father_mname"placeholder="Middle Name">
-            </div>
-        </div>
-
-        <div class="form-grid one">
-            <div class="form-group">    
-                <label>Occupation</label>
-                <input type="text" name="father_occ"placeholder="Occupation">
+            <div class="form-group<?php echo $fieldGroupClass('father_mname'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('father_mname')); ?></label>
+                <input type="text" name="father_mname" placeholder="<?php echo htmlspecialchars($builtinLabel('father_mname')); ?>" <?php echo $fieldDisabledAttr('father_mname'); ?>>
             </div>
         </div>
 
         <div class="form-grid one">
-            <div class="form-group">
-                <label>Contact Number</label>
-                <input type="text" name="father_contact"placeholder="Contact Number">
+            <div class="form-group<?php echo $fieldGroupClass('father_occ'); ?>">    
+                <label><?php echo htmlspecialchars($builtinLabel('father_occ')); ?></label>
+                <input type="text" name="father_occ" placeholder="<?php echo htmlspecialchars($builtinLabel('father_occ')); ?>" <?php echo $fieldDisabledAttr('father_occ'); ?>>
+            </div>
+        </div>
+
+        <div class="form-grid one">
+            <div class="form-group<?php echo $fieldGroupClass('father_contact'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('father_contact')); ?></label>
+                <input type="text" name="father_contact" placeholder="<?php echo htmlspecialchars($builtinLabel('father_contact')); ?>" <?php echo $fieldDisabledAttr('father_contact'); ?>>
             </div>
         </div>
 
@@ -390,38 +408,38 @@ $customFieldMap = smartenroll_get_field_label_map();
         <h2>Mother's Information</h2>
 
         <div class="form-grid three">
-            <div class="form-group">
-                <label>Last Name</label>
-                <input type="text" name="mother_lname"placeholder="Last Name">
+            <div class="form-group<?php echo $fieldGroupClass('mother_lname'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('mother_lname')); ?></label>
+                <input type="text" name="mother_lname" placeholder="<?php echo htmlspecialchars($builtinLabel('mother_lname')); ?>" <?php echo $fieldDisabledAttr('mother_lname'); ?>>
             </div>
-            <div class="form-group">
-                <label>First Name</label>
-                <input type="text" name="mother_fname"placeholder="First Name">
+            <div class="form-group<?php echo $fieldGroupClass('mother_fname'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('mother_fname')); ?></label>
+                <input type="text" name="mother_fname" placeholder="<?php echo htmlspecialchars($builtinLabel('mother_fname')); ?>" <?php echo $fieldDisabledAttr('mother_fname'); ?>>
             </div>
-            <div class="form-group">
-                <label>Middle Name</label>
-                <input type="text" name="mother_mname"placeholder="Middle Name">
-            </div>
-        </div>
-
-        <div class="form-grid one">
-            <div class="form-group">
-                <label>Occupation</label>
-                <input type="text" name="mother_occ"placeholder="Occupation">
+            <div class="form-group<?php echo $fieldGroupClass('mother_mname'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('mother_mname')); ?></label>
+                <input type="text" name="mother_mname" placeholder="<?php echo htmlspecialchars($builtinLabel('mother_mname')); ?>" <?php echo $fieldDisabledAttr('mother_mname'); ?>>
             </div>
         </div>
 
         <div class="form-grid one">
-            <div class="form-group">
-                <label>Contact Number</label>
-                <input type="text" name="mother_contact"placeholder="Contact Number">
+            <div class="form-group<?php echo $fieldGroupClass('mother_occ'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('mother_occ')); ?></label>
+                <input type="text" name="mother_occ" placeholder="<?php echo htmlspecialchars($builtinLabel('mother_occ')); ?>" <?php echo $fieldDisabledAttr('mother_occ'); ?>>
             </div>
         </div>
 
         <div class="form-grid one">
-            <div class="form-group">
-                <label>Mother (Maiden Full Name)</label>
-                <input type="text" name="mother_maiden"placeholder="Last Name, First Name, Middle Name">
+            <div class="form-group<?php echo $fieldGroupClass('mother_contact'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('mother_contact')); ?></label>
+                <input type="text" name="mother_contact" placeholder="<?php echo htmlspecialchars($builtinLabel('mother_contact')); ?>" <?php echo $fieldDisabledAttr('mother_contact'); ?>>
+            </div>
+        </div>
+
+        <div class="form-grid one">
+            <div class="form-group<?php echo $fieldGroupClass('mother_maiden'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('mother_maiden')); ?></label>
+                <input type="text" name="mother_maiden" placeholder="<?php echo htmlspecialchars($builtinLabel('mother_maiden')); ?>" <?php echo $fieldDisabledAttr('mother_maiden'); ?>>
             </div>
         </div>
 
@@ -451,45 +469,45 @@ $customFieldMap = smartenroll_get_field_label_map();
         <!-- GUARDIAN -->
         <h2>Guardian's Information</h2>
 
-        <div class="form-grid one">
+        <div class="form-grid one<?php echo $isBuiltinActive('guardian_type') ? '' : ' form-group-hidden'; ?>">
             <div class="form-group">
-                <label>Guardian Type</label>
+                <label><?php echo htmlspecialchars($builtinLabel('guardian_type')); ?></label>
                 <div style="display:flex; gap:30px;">
-                    <label><input type="radio" name="guardian_type" value="other"> Other</label>
+                    <label><input type="radio" name="guardian_type" value="other" <?php echo $fieldDisabledAttr('guardian_type'); ?>> Other</label>
 
-                    <label><input type="radio" name="guardian_type" value="mother"> Mother</label>
-                    <label><input type="radio" name="guardian_type" value="father"> Father</label>
+                    <label><input type="radio" name="guardian_type" value="mother" <?php echo $fieldDisabledAttr('guardian_type'); ?>> Mother</label>
+                    <label><input type="radio" name="guardian_type" value="father" <?php echo $fieldDisabledAttr('guardian_type'); ?>> Father</label>
                     
                 </div>
             </div>
         </div>
 
         <div class="form-grid three">
-            <div class="form-group">
-                <label>Last Name</label>
-                <input type="text" name="guardian_lname" readonly>
+            <div class="form-group<?php echo $fieldGroupClass('guardian_lname'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('guardian_lname')); ?></label>
+                <input type="text" name="guardian_lname" <?php echo $fieldReadonlyAttr('guardian_lname', $isBuiltinActive('guardian_type')); ?>>
             </div>
-            <div class="form-group">
-                <label>First Name</label>
-                <input type="text" name="guardian_fname" readonly>
+            <div class="form-group<?php echo $fieldGroupClass('guardian_fname'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('guardian_fname')); ?></label>
+                <input type="text" name="guardian_fname" <?php echo $fieldReadonlyAttr('guardian_fname', $isBuiltinActive('guardian_type')); ?>>
             </div>
-            <div class="form-group">
-                <label>Middle Name</label>
-                <input type="text" name="guardian_mname" readonly>
-            </div>
-        </div>
-
-        <div class="form-grid one">
-            <div class="form-group">
-                <label>Occupation</label>
-                <input type="text" name="guardian_occ" readonly>
+            <div class="form-group<?php echo $fieldGroupClass('guardian_mname'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('guardian_mname')); ?></label>
+                <input type="text" name="guardian_mname" <?php echo $fieldReadonlyAttr('guardian_mname', $isBuiltinActive('guardian_type')); ?>>
             </div>
         </div>
 
         <div class="form-grid one">
-            <div class="form-group">
-                <label>Contact Number</label>
-                <input type="text" name="guardian_contact" readonly>
+            <div class="form-group<?php echo $fieldGroupClass('guardian_occ'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('guardian_occ')); ?></label>
+                <input type="text" name="guardian_occ" <?php echo $fieldReadonlyAttr('guardian_occ', $isBuiltinActive('guardian_type')); ?>>
+            </div>
+        </div>
+
+        <div class="form-grid one">
+            <div class="form-group<?php echo $fieldGroupClass('guardian_contact'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('guardian_contact')); ?></label>
+                <input type="text" name="guardian_contact" <?php echo $fieldReadonlyAttr('guardian_contact', $isBuiltinActive('guardian_type')); ?>>
             </div>
         </div>
 
@@ -522,37 +540,37 @@ $customFieldMap = smartenroll_get_field_label_map();
 
         <!-- D1 -->
         <div class="form-grid one">
-            <div class="form-group">
+            <div class="form-group<?php echo $fieldGroupClass('special_needs'); ?>">
                 <label>
-                    D1. Does the learner have special education needs?
+                    <?php echo htmlspecialchars($builtinLabel('special_needs')); ?>
                     <br>
                     <small>(e.g. physical, mental, social disability, giftedness, among others)</small>
                 </label>
-                <input type="text" name="special_needs" placeholder="Specify if any">
+                <input type="text" name="special_needs" placeholder="Specify if any" <?php echo $fieldDisabledAttr('special_needs'); ?>>
             </div>
         </div>
 
         <!-- D2 -->
-            <div class="form-grid one">
+            <div class="form-grid one<?php echo $isBuiltinActive('medication') ? '' : ' form-group-hidden'; ?>">
                 <div class="form-group">
-                    <label>D2. Does your child take any medication?</label>
+                    <label><?php echo htmlspecialchars($builtinLabel('medication')); ?></label>
                     <div style="display:flex; gap:30px; margin-top:10px;">
-                        <label><input type="radio" name="medication" value="yes"> Yes</label>
-                        <label><input type="radio" name="medication" value="no" checked> No</label>
+                        <label><input type="radio" name="medication" value="yes" <?php echo $fieldDisabledAttr('medication'); ?>> Yes</label>
+                        <label><input type="radio" name="medication" value="no" checked <?php echo $fieldDisabledAttr('medication'); ?>> No</label>
                     </div>
                 </div>
             </div>
 
         <!-- D3 -->
         <div class="form-grid one">
-            <div class="form-group">
-                <label>D3. What medication?</label>
+            <div class="form-group<?php echo $fieldGroupClass('medication_details'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('medication_details')); ?></label>
                 <input
                     type="text"
                     id="medication_details"
                     name="medication_details"
                     placeholder="Specify medication"
-                    disabled
+                    <?php echo !$isBuiltinActive('medication_details') ? 'disabled' : ($isBuiltinActive('medication') ? 'disabled' : ''); ?>
                 >
             </div>
         </div>
@@ -586,54 +604,54 @@ $customFieldMap = smartenroll_get_field_label_map();
 
         <!-- 1st Priority -->
         <div class="form-grid three emergency-contact-block" data-emergency-block="1">
-            <div class="form-group">
-                <label>1st: Parent/Guardian Name</label>
-                <input type="text" name="emergency1_name" placeholder="Full Name">
+            <div class="form-group<?php echo $fieldGroupClass('emergency1_name'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('emergency1_name')); ?></label>
+                <input type="text" name="emergency1_name" placeholder="Full Name" <?php echo $fieldDisabledAttr('emergency1_name'); ?>>
             </div>
 
-            <div class="form-group">
-                <label>Contact No.</label>
-                <input type="tel" name="emergency1_contact" placeholder="09XXXXXXXXX">
+            <div class="form-group<?php echo $fieldGroupClass('emergency1_contact'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('emergency1_contact')); ?></label>
+                <input type="tel" name="emergency1_contact" placeholder="09XXXXXXXXX" <?php echo $fieldDisabledAttr('emergency1_contact'); ?>>
             </div>
 
-            <div class="form-group">
-                <label>Relationship</label>
-                <input type="text" name="emergency1_relationship" placeholder="e.g. Mother, Father, Guardian">
+            <div class="form-group<?php echo $fieldGroupClass('emergency1_relationship'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('emergency1_relationship')); ?></label>
+                <input type="text" name="emergency1_relationship" placeholder="e.g. Mother, Father, Guardian" <?php echo $fieldDisabledAttr('emergency1_relationship'); ?>>
             </div>
         </div>
 
         <!-- 2nd Priority -->
         <div class="form-grid three emergency-contact-block emergency-contact-hidden" data-emergency-block="2">
-            <div class="form-group">
-                <label>2nd: Parent/Guardian Name</label>
+            <div class="form-group<?php echo $fieldGroupClass('emergency2_name'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('emergency2_name')); ?></label>
                 <input type="text" name="emergency2_name" placeholder="Full Name" disabled>
             </div>
 
-            <div class="form-group">
-                <label>Contact No.</label>
+            <div class="form-group<?php echo $fieldGroupClass('emergency2_contact'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('emergency2_contact')); ?></label>
                 <input type="tel" name="emergency2_contact" placeholder="09XXXXXXXXX" disabled>
             </div>
 
-            <div class="form-group">
-                <label>Relationship</label>
-                <input type="text" name="emergency2_relationship"placeholder="e.g. Aunt, Uncle, Guardian" disabled>
+            <div class="form-group<?php echo $fieldGroupClass('emergency2_relationship'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('emergency2_relationship')); ?></label>
+                <input type="text" name="emergency2_relationship" placeholder="e.g. Aunt, Uncle, Guardian" disabled>
             </div>
         </div>
 
         <!-- 3rd Priority -->
         <div class="form-grid three emergency-contact-block emergency-contact-hidden" data-emergency-block="3">
-            <div class="form-group">
-                <label>3rd: Parent/Guardian Name</label>
+            <div class="form-group<?php echo $fieldGroupClass('emergency3_name'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('emergency3_name')); ?></label>
                 <input type="text" name="emergency3_name" placeholder="Full Name" disabled>
             </div>
 
-            <div class="form-group">
-                <label>Contact No.</label>
+            <div class="form-group<?php echo $fieldGroupClass('emergency3_contact'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('emergency3_contact')); ?></label>
                 <input type="tel" name="emergency3_contact" placeholder="09XXXXXXXXX" disabled>
             </div>
 
-            <div class="form-group">
-                <label>Relationship</label>
+            <div class="form-group<?php echo $fieldGroupClass('emergency3_relationship'); ?>">
+                <label><?php echo htmlspecialchars($builtinLabel('emergency3_relationship')); ?></label>
                 <input type="text" name="emergency3_relationship" placeholder="e.g. Relative, Caregiver" disabled>
             </div>
         </div>
@@ -733,6 +751,9 @@ $customFieldMap = smartenroll_get_field_label_map();
 
 </div>
 
+    <script>
+    window.smartenrollFieldLabels = <?php echo json_encode($fieldLabelsForJs, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+    </script>
     <script src="js/enroll.js"></script>
 
     </body>

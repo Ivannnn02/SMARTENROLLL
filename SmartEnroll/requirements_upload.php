@@ -180,12 +180,10 @@ try {
     $studentTypes = $queryTypes;
     $studentValues = $queryValues;
 
-    if (!$isPrintMode) {
-        $studentSql .= " LIMIT ? OFFSET ?";
-        $studentTypes .= 'ii';
-        $studentValues[] = $perPage;
-        $studentValues[] = $offset;
-    }
+    $studentSql .= " LIMIT ? OFFSET ?";
+    $studentTypes .= 'ii';
+    $studentValues[] = $perPage;
+    $studentValues[] = $offset;
 
     $studentStmt = $conn->prepare($studentSql);
     if ($studentValues) {
@@ -241,10 +239,12 @@ try {
 
     <?php if ($isPrintMode): ?>
         <section class="requirements-print-summary">
-            <strong>Printed List</strong>
+            <strong>Filtered Student List</strong>
             <span>Filter: <?php echo htmlspecialchars(active_filter_label($requirementFilter, $requirementFilterOptions)); ?></span>
             <span>Search: <?php echo htmlspecialchars($search !== '' ? $search : 'All Students'); ?></span>
-            <span>Records: <?php echo $filteredStudents; ?></span>
+            <span>Page: <?php echo $page; ?> of <?php echo $totalPages; ?></span>
+            <span>Shown: <?php echo count($students); ?></span>
+            <span>Matching Records: <?php echo $filteredStudents; ?></span>
         </section>
     <?php endif; ?>
 
@@ -265,32 +265,35 @@ try {
             <?php if (!$isPrintMode): ?>
                 <div class="requirements-controls">
                     <form method="get" action="requirements_upload.php" class="requirements-filters-form">
+                        <a
+                            id="requirementsPrintBtn"
+                            href="requirements_upload.php?<?php echo htmlspecialchars(http_build_query(array_filter([
+                                'q' => $search,
+                                'requirement_filter' => $requirementFilter,
+                                'page' => $page,
+                                'print' => '1',
+                            ], static fn($value) => $value !== '' && $value !== null))); ?>"
+                            class="requirements-toolbar-btn requirements-toolbar-btn-icon requirements-toolbar-btn-print"
+                            aria-label="Print List"
+                            title="Print List"
+                        >
+                            <i class="fa-solid fa-print"></i>
+                        </a>
+                        <div class="requirements-filter-wrap">
+                            <i class="fa-solid fa-filter"></i>
+                            <select name="requirement_filter" id="requirementsFilter" class="requirements-filter-select" onchange="this.form.submit()">
+                                <?php foreach ($requirementFilterOptions as $filterKey => $filterLabel): ?>
+                                    <option value="<?php echo htmlspecialchars($filterKey); ?>" <?php echo $requirementFilter === $filterKey ? 'selected' : ''; ?>>
+                                        <?php echo htmlspecialchars($filterLabel); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
                         <div class="requirements-search">
                             <i class="fa-solid fa-magnifying-glass"></i>
                             <input id="requirementsSearch" name="q" type="text" value="<?php echo htmlspecialchars($search); ?>" placeholder="Search student, ID, grade, or school year">
                         </div>
-                        <select name="requirement_filter" id="requirementsFilter" class="requirements-filter-select">
-                            <?php foreach ($requirementFilterOptions as $filterKey => $filterLabel): ?>
-                                <option value="<?php echo htmlspecialchars($filterKey); ?>" <?php echo $requirementFilter === $filterKey ? 'selected' : ''; ?>>
-                                    <?php echo htmlspecialchars($filterLabel); ?>
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                        <button type="submit" class="requirements-toolbar-btn">Apply Filter</button>
                     </form>
-                    <a
-                        href="requirements_upload.php?<?php echo htmlspecialchars(http_build_query(array_filter([
-                            'q' => $search,
-                            'requirement_filter' => $requirementFilter,
-                            'print' => '1',
-                        ], static fn($value) => $value !== '' && $value !== null))); ?>"
-                        class="requirements-toolbar-btn requirements-toolbar-btn-print"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                    >
-                        <i class="fa-solid fa-print"></i>
-                        Print List
-                    </a>
                 </div>
             <?php endif; ?>
         </div>
@@ -343,6 +346,32 @@ try {
     </section>
 </main>
 
+<?php if ($isPrintMode): ?>
+<script>
+window.addEventListener('load', () => {
+    let shouldClose = false;
+
+    const closePrintTab = () => {
+        if (shouldClose) {
+            window.close();
+        }
+    };
+
+    window.addEventListener('afterprint', () => {
+        shouldClose = true;
+        setTimeout(closePrintTab, 150);
+    });
+
+    window.addEventListener('focus', () => {
+        if (shouldClose) {
+            setTimeout(closePrintTab, 150);
+        }
+    });
+
+    window.print();
+});
+</script>
+<?php endif; ?>
 <script src="js/requirements_upload.js"></script>
 </body>
 </html>

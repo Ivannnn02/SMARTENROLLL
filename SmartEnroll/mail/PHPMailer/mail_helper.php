@@ -7,6 +7,27 @@ require_once __DIR__ . '/src/SMTP.php';
 use PHPMailer\PHPMailer\Exception;
 use PHPMailer\PHPMailer\PHPMailer;
 
+class SmartenrollMailer extends PHPMailer
+{
+    public function addEmbeddedImageWithoutName(
+        string $path,
+        string $cid,
+        string $encoding = self::ENCODING_BASE64,
+        string $type = '',
+        string $disposition = 'inline'
+    ): bool {
+        $added = $this->addEmbeddedImage($path, $cid, ' ', $encoding, $type, $disposition);
+        if ($added && !empty($this->attachment)) {
+            $lastIndex = array_key_last($this->attachment);
+            if ($lastIndex !== null) {
+                $this->attachment[$lastIndex][2] = '';
+            }
+        }
+
+        return $added;
+    }
+}
+
 function get_email_config(): array
 {
     $configPath = __DIR__ . '/email_config.php';
@@ -36,7 +57,7 @@ function smtp_send_mail(string $to, string $subject, string $htmlBody, string $t
     }
 
     try {
-        $mail = new PHPMailer(true);
+        $mail = new SmartenrollMailer(true);
         $mail->isSMTP();
         $mail->Host = $host;
         $mail->Port = $port;
@@ -65,7 +86,11 @@ function smtp_send_mail(string $to, string $subject, string $htmlBody, string $t
             $name = (string)($image['name'] ?? basename($path));
 
             if ($path !== '' && $cid !== '' && is_file($path)) {
-                $mail->addEmbeddedImage($path, $cid, $name);
+                if ($name === '') {
+                    $mail->addEmbeddedImageWithoutName($path, $cid);
+                } else {
+                    $mail->addEmbeddedImage($path, $cid, $name);
+                }
             }
         }
 

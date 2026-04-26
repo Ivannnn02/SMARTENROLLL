@@ -3385,9 +3385,12 @@ class PHPMailer
                     $mime[] = 'Content-ID: <' . $this->encodeHeader($this->secureHeader($cid)) . '>' . static::$LE;
                 }
 
-                //Allow for bypassing the Content-Disposition header
-                if (!empty($disposition)) {
-                    $encoded_name = $this->encodeHeader($this->secureHeader($name));
+                //Allow for bypassing the Content-Disposition header.
+                //For nameless inline images, omitting the header helps some mail clients
+                //treat the part as related body content instead of surfacing it as a file.
+                $encoded_name = $this->encodeHeader($this->secureHeader($name));
+                $skipDispositionHeader = 'inline' === $disposition && '' === $encoded_name;
+                if (!empty($disposition) && !$skipDispositionHeader) {
                     if (!empty($encoded_name)) {
                         $mime[] = sprintf(
                             'Content-Disposition: %s; filename=%s%s',

@@ -56,6 +56,15 @@ function smartenroll_field_labelize(string $key, array $customFieldMap = []): st
         'learner_fname' => 'Learner First Name',
         'learner_mname' => 'Learner Middle Name',
         'learner_ext' => 'Learner Extension Name',
+        'father_lname' => 'Father Last Name',
+        'father_fname' => 'Father First Name',
+        'father_mname' => 'Father Middle Name',
+        'mother_lname' => 'Mother Last Name',
+        'mother_fname' => 'Mother First Name',
+        'mother_mname' => 'Mother Middle Name',
+        'guardian_lname' => 'Guardian Last Name',
+        'guardian_fname' => 'Guardian First Name',
+        'guardian_mname' => 'Guardian Middle Name',
         'mother_maiden' => 'Mother Maiden Full Name',
         'father_occ' => 'Father Occupation',
         'mother_occ' => 'Mother Occupation',
@@ -227,6 +236,17 @@ function smartenroll_builtin_field_rows(?mysqli $conn = null, bool $includeInact
     }
 
     return $rows;
+}
+
+function smartenroll_builtin_field_row_map(?mysqli $conn = null, bool $includeInactive = true): array
+{
+    $map = [];
+
+    foreach (smartenroll_builtin_field_rows($conn, $includeInactive) as $row) {
+        $map[(string)$row['field_key']] = $row;
+    }
+
+    return $map;
 }
 
 function smartenroll_reserved_field_labels(?mysqli $conn = null): array
