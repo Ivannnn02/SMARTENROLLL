@@ -1553,7 +1553,16 @@ html {
     color: #22374f;
 }
 
+.receipt-details-page .invoice-email-line-copy {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    min-width: 0;
+}
+
 .receipt-details-page .invoice-email-line-item span {
+    flex: 1 1 auto;
+    min-width: 0;
     font-size: 16px;
     line-height: 1.6;
 }
@@ -1562,6 +1571,32 @@ html {
     min-width: 110px;
     font-size: 16px;
     line-height: 1.6;
+}
+
+.receipt-details-page .invoice-email-remove-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    flex: 0 0 28px;
+    border: 1px solid #d6e2f1;
+    border-radius: 999px;
+    background: #ffffff;
+    color: #667085;
+    cursor: pointer;
+    transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+.receipt-details-page .invoice-email-remove-btn:hover {
+    background: #fef2f2;
+    border-color: #fecaca;
+    color: #b42318;
+}
+
+.receipt-details-page .invoice-email-remove-btn i {
+    font-size: 12px;
+    line-height: 1;
 }
 
 .receipt-details-page .invoice-email-empty-action {
@@ -2961,6 +2996,7 @@ html {
 
     body[data-print-target="invoice-email"] .invoice-email-preview-actions,
     body[data-print-target="invoice-email"] .invoice-email-add-trigger,
+    body[data-print-target="invoice-email"] .invoice-email-remove-btn,
     body[data-print-target="invoice-email"] .invoice-email-catalog-menu,
     body[data-print-target="invoice-email"] .invoice-email-line-item-add,
     body[data-print-target="invoice-email"] .catalog-add-btn {

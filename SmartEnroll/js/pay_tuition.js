@@ -103,6 +103,24 @@ function renderInvoiceEmailAddRow() {
     + '</div>';
 }
 
+function renderInvoiceEmailPreviewRow(item, isRemovable = false) {
+  const option = String(item.option || item.label || 'Payment Item');
+  const label = String(item.label || option || 'Payment Item');
+  const amount = parseAmount(item.amount);
+
+  return '<div class="invoice-email-line-item' + (isRemovable ? ' is-removable' : '') + '">'
+    + '<div class="invoice-email-line-copy">'
+    + (isRemovable
+      ? '<button type="button" class="invoice-email-remove-btn" data-option="' + escapeHtml(option) + '" aria-label="Remove ' + escapeHtml(label) + ' from top preview">'
+        + '<i class="fa-solid fa-xmark"></i>'
+        + '</button>'
+      : '')
+    + '<span>' + escapeHtml(label) + '</span>'
+    + '</div>'
+    + '<strong>' + escapeHtml(formatInvoiceNumber(amount)) + '</strong>'
+    + '</div>';
+}
+
 function formatPHP(value) {
   return 'PHP ' + Number(value || 0).toLocaleString('en-PH', {
     minimumFractionDigits: 2,
@@ -245,12 +263,14 @@ if (paymentCatalog && selectedPaymentTable && selectedPaymentRowTemplate) {
   const getPreviewEmailDisplayItems = () => {
     if (hasPreviewEmailItems()) {
       return previewEmailItemsState.map((item) => ({
+        option: item.option || '',
         label: item.displayLabel || item.option || 'Payment Item',
         amount: parseAmount(item.amount)
       }));
     }
 
     return getRows().map((row) => ({
+      option: row.dataset.option || '',
       label: row.dataset.displayLabel || row.dataset.option || 'Payment Item',
       amount: getRowAmount(row)
     }));
@@ -279,6 +299,7 @@ if (paymentCatalog && selectedPaymentTable && selectedPaymentRowTemplate) {
     const dueDateText = formatPreviewDate(paymentDateInput?.value || '');
     const invoiceNumberText = String(receiptNumberInput?.value || 'N/A').trim() || 'N/A';
     const previewTotal = hasPreviewEmailItems() ? getPreviewEmailItemsTotal() : total;
+    const isCustomPreview = hasPreviewEmailItems();
     const formattedTotal = formatPHP(previewTotal);
 
     if (invoiceEmailTotal) {
@@ -309,16 +330,9 @@ if (paymentCatalog && selectedPaymentTable && selectedPaymentRowTemplate) {
         return;
       }
 
-      const itemRows = displayItems.map((item) => {
-        const label = item.label || 'Payment Item';
-        const amount = item.amount;
-        return '<div class="invoice-email-line-item">'
-          + '<span>' + escapeHtml(label) + '</span>'
-          + '<strong>' + escapeHtml(formatInvoiceNumber(amount)) + '</strong>'
-          + '</div>';
-      });
+      const itemRows = displayItems.map((item) => renderInvoiceEmailPreviewRow(item, isCustomPreview));
 
-      if (hasPreviewEmailItems()) {
+      if (isCustomPreview) {
         itemRows.push(renderInvoiceEmailAddRow());
       }
 
@@ -555,6 +569,22 @@ if (paymentCatalog && selectedPaymentTable && selectedPaymentRowTemplate) {
     syncEmailPreview(getBuilderTotal());
   };
 
+  const removePreviewEmailItem = (option) => {
+    const targetOption = String(option || '').trim();
+    if (!targetOption) {
+      return;
+    }
+
+    const previewIndex = previewEmailItemsState.findIndex((item) => item.option === targetOption);
+    if (previewIndex === -1) {
+      return;
+    }
+
+    previewEmailItemsState.splice(previewIndex, 1);
+    setInvoiceEmailCatalogOpen(false);
+    syncEmailPreview(getBuilderTotal());
+  };
+
   receiptAddTrigger?.addEventListener('click', (event) => {
     event.stopPropagation();
     if (receiptAddTrigger.disabled) {
@@ -611,6 +641,13 @@ if (paymentCatalog && selectedPaymentTable && selectedPaymentRowTemplate) {
   });
 
   invoiceEmailItems?.addEventListener('click', (event) => {
+    const removeButton = event.target.closest('.invoice-email-remove-btn');
+    if (removeButton) {
+      event.preventDefault();
+      removePreviewEmailItem(removeButton.dataset.option || '');
+      return;
+    }
+
     const addButton = event.target.closest('.invoice-email-add-trigger');
     if (!addButton) {
       return;

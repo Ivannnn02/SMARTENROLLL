@@ -8,6 +8,7 @@ require_once __DIR__ . '/mail/PHPMailer/mail_helper.php';
 $currentUser = smartenroll_require_role('finance');
 
 $paymentHistory = [];
+$gmailSendHistory = [];
 $selectedStudent = null;
 $selectedPayment = null;
 $error = '';
@@ -50,6 +51,17 @@ function format_invoice_date(?string $dateValue): string
     return $date ? $date->format('d M Y') : $raw;
 }
 
+function format_history_timestamp(?string $dateValue): string
+{
+    $raw = trim((string)$dateValue);
+    if ($raw === '') {
+        return 'N/A';
+    }
+
+    $date = date_create($raw);
+    return $date ? $date->format('d M Y g:i A') : $raw;
+}
+
 function build_invoice_item_description(array $student, array $item): string
 {
     $gradeLevel = strtoupper(trim((string)($student['grade_level'] ?? '')));
@@ -64,6 +76,64 @@ function build_invoice_item_description(array $student, array $item): string
     }
 
     return $label !== '' ? $label : 'PAYMENT ITEM';
+}
+
+function get_invoice_reference(array $student, array $payment = []): string
+{
+    $gradeLevel = trim((string)($student['grade_level'] ?? $payment['grade_level'] ?? ''));
+    $schoolYear = trim((string)($student['school_year'] ?? $payment['school_year'] ?? ''));
+
+    if ($gradeLevel === '' && $schoolYear === '') {
+        return 'N/A';
+    }
+
+    if ($gradeLevel === '') {
+        return 'SCHOOL YEAR ' . ($schoolYear !== '' ? $schoolYear : 'N/A');
+    }
+
+    return trim($gradeLevel . ' SCHOOL YEAR ' . ($schoolYear !== '' ? $schoolYear : 'N/A'));
+}
+
+function get_school_address_lines(): array
+{
+    return [
+        'Adreo Montessori Inc.',
+        'Bldg. 42-43 Great Mall of',
+        'Central Luzon, Brgy. Tabun',
+        'Xevera',
+        'MABALACAT CITY',
+        'PAMPANGA 2010',
+        'PHILIPPINES',
+    ];
+}
+
+function get_payment_detail_blocks(): array
+{
+    return [
+        [
+            'branch' => 'ADREO XEVERA',
+            'account_name' => 'ADREO MONTESSORI INCORPORATED',
+            'bank' => 'Bank of the Philippine Islands (BPI)',
+            'account_number' => '0121-0022-01',
+        ],
+        [
+            'branch' => 'ADREO ANGELES',
+            'account_name' => 'ADREO LEARNING HUB',
+            'bank' => 'Security Bank',
+            'account_number' => '0000073919401',
+        ],
+        [
+            'branch' => 'ADREO CAMACHILES',
+            'account_name' => 'ADREO MONTESSORI INCORPORATED',
+            'bank' => 'Philippine National Bank (PNB)',
+            'account_number' => '203570004892',
+        ],
+    ];
+}
+
+function get_registered_office_line(): string
+{
+    return 'Registered Office: Bldg. 42-43 Great Mall of Central Luzon, Brgy. Tabun Xevera, Mabalacat City, Pampanga, 2010, Philippines.';
 }
 
 function is_loopback_host(string $host): bool
@@ -472,6 +542,25 @@ function decode_saved_payment_items(?string $rawJson, float $amountPaid): array
     return $items;
 }
 
+function build_invoice_item_list(array $student, array $items, string $emptyLabel = 'N/A'): string
+{
+    $labels = [];
+
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+
+        $label = trim(build_invoice_item_description($student, $item));
+        if ($label !== '') {
+            $labels[] = $label;
+        }
+    }
+
+    $labels = array_values(array_unique($labels));
+    return !empty($labels) ? implode(', ', $labels) : $emptyLabel;
+}
+
 function render_receipt_items_html(array $items): string
 {
     $rows = '';
@@ -495,7 +584,7 @@ function render_receipt_items_text(array $items): string
     return implode("\r\n", $lines);
 }
 
-function send_receipt_email(array $student, array $payment): bool
+function send_receipt_email(array $student, array $payment, string $layout = 'summary'): bool
 {
     global $lastEmailError;
 
@@ -505,13 +594,30 @@ function send_receipt_email(array $student, array $payment): bool
         return false;
     }
 
+    $emailLayout = in_array($layout, ['summary', 'invoice'], true) ? $layout : 'summary';
+
     $studentName = format_name($student);
+    if ($studentName === '') {
+        $studentName = 'N/A';
+    }
+
+    $studentId = trim((string)($student['student_id'] ?? ''));
+    $gradeLevel = trim((string)($student['grade_level'] ?? $payment['grade_level'] ?? ''));
     $receiptNo = trim((string)($payment['receipt_no'] ?? '')) !== '' ? (string)$payment['receipt_no'] : 'N/A';
     $items = decode_saved_payment_items((string)($payment['payment_items'] ?? ''), (float)($payment['amount_paid'] ?? 0));
     $remainingBalance = resolve_payment_balance_after($payment);
+    $cumulativePaid = get_payment_cumulative_paid($payment);
     $invoiceAmount = round((float)($payment['amount_paid'] ?? 0), 2);
     $invoiceAmountDisplay = number_format($invoiceAmount, 2);
-    $dueDateDisplay = format_invoice_date((string)($payment['payment_date'] ?? ''));
+    $cumulativePaidDisplay = number_format($cumulativePaid, 2);
+    $remainingBalanceDisplay = number_format($remainingBalance, 2);
+    $invoiceDateDisplay = format_invoice_date((string)($payment['payment_date'] ?? ''));
+    $dueDateDisplay = $invoiceDateDisplay;
+    $referenceDisplay = get_invoice_reference($student, $payment);
+    $schoolAddressLines = get_school_address_lines();
+    $paymentDetailBlocks = get_payment_detail_blocks();
+    $registeredOfficeLine = get_registered_office_line();
+    $paymentNote = trim((string)($payment['payment_note'] ?? ''));
     $paymentId = (int)($payment['id'] ?? 0);
     $viewLink = $paymentId > 0
         ? build_app_url('tuition_receipt_details.php', [
@@ -522,8 +628,8 @@ function send_receipt_email(array $student, array $payment): bool
             'student_id' => (string)($student['student_id'] ?? ''),
         ]) . '#receipt-email-preview';
     $embeddedImages = [];
-    $logoMarkup = '<div style="display:inline-block;font-family:Georgia,\'Times New Roman\',serif;font-size:28px;line-height:1;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#19325a;">SMARTENROLL</div>'
-        . '<div style="width:120px;height:3px;margin:10px auto 0;border-radius:999px;background:linear-gradient(90deg,#f6bf26 0%,#2d9cf0 100%);"></div>';
+    $logoSummaryMarkup = '<div style="font-family:Arial,sans-serif;font-size:16px;line-height:1.3;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#19325a;text-align:center;">SMARTENROLL</div>';
+    $logoInvoiceMarkup = '<div style="font-family:Arial,sans-serif;font-size:16px;line-height:1.3;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#19325a;">SMARTENROLL</div>';
     $logoPath = __DIR__ . '/assets/logo.png';
     if (is_file($logoPath)) {
         $logoCid = 'smartenroll-logo';
@@ -532,65 +638,294 @@ function send_receipt_email(array $student, array $payment): bool
             'cid' => $logoCid,
             'name' => 'Tuition Invoice',
         ];
-        $logoMarkup = '<img src="cid:' . htmlspecialchars($logoCid) . '" alt="SMARTENROLL Logo" style="display:block;width:108px;height:auto;object-fit:contain;margin:0 auto;">';
+        $logoSummaryMarkup = '<img src="cid:' . htmlspecialchars($logoCid) . '" alt="SMARTENROLL Logo" width="108" style="display:block;width:108px;max-width:108px;height:auto;border:0;margin:0 auto;">';
+        $logoInvoiceMarkup = '<img src="cid:' . htmlspecialchars($logoCid) . '" alt="SMARTENROLL Logo" width="108" style="display:block;width:108px;max-width:108px;height:auto;border:0;">';
     }
+
+    $schoolAddressHtml = '';
+    foreach ($schoolAddressLines as $line) {
+        $schoolAddressHtml .= '<tr>'
+            . '<td style="padding:0;font-size:13px;line-height:1.45;color:#344054;text-align:left;">' . htmlspecialchars($line) . '</td>'
+            . '</tr>';
+    }
+
+    $summaryEmailItemsHtml = '';
+    foreach ($items as $item) {
+        $itemLabel = build_invoice_item_description($student, $item);
+        $itemAmountDisplay = number_format((float)($item['amount'] ?? 0), 2);
+        $summaryEmailItemsHtml .= '<tr>'
+            . '<td style="padding:14px 0;border-bottom:1px solid #d8e1ef;color:#22374f;font-size:14px;line-height:1.55;">' . htmlspecialchars($itemLabel) . '</td>'
+            . '<td style="padding:14px 0;border-bottom:1px solid #d8e1ef;color:#22374f;font-size:14px;line-height:1.55;text-align:right;white-space:nowrap;">' . htmlspecialchars($itemAmountDisplay) . '</td>'
+            . '</tr>';
+    }
+
+    if ($summaryEmailItemsHtml === '') {
+        $summaryEmailItemsHtml = '<tr>'
+            . '<td style="padding:14px 0;border-bottom:1px solid #d8e1ef;color:#98a2b3;font-size:14px;line-height:1.55;font-style:italic;">No billing item added yet</td>'
+            . '<td style="padding:14px 0;border-bottom:1px solid #d8e1ef;color:#22374f;font-size:14px;line-height:1.55;text-align:right;white-space:nowrap;">0.00</td>'
+            . '</tr>';
+    }
+
     $emailItemsHtml = '';
     foreach ($items as $item) {
         $itemLabel = build_invoice_item_description($student, $item);
         $itemAmountDisplay = number_format((float)($item['amount'] ?? 0), 2);
         $emailItemsHtml .= '<tr>'
-            . '<td style="padding:14px 0;border-bottom:1px solid #e5edf6;color:#22374f;font-size:15px;line-height:1.55;">' . htmlspecialchars($itemLabel) . '</td>'
-            . '<td style="padding:14px 0 14px 16px;border-bottom:1px solid #e5edf6;color:#22374f;font-size:15px;line-height:1.55;text-align:right;white-space:nowrap;">' . htmlspecialchars($itemAmountDisplay) . '</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#22374f;font-size:14px;line-height:1.55;">' . htmlspecialchars($itemLabel) . '</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#22374f;font-size:14px;line-height:1.55;text-align:center;white-space:nowrap;">1.00</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#22374f;font-size:14px;line-height:1.55;text-align:right;white-space:nowrap;">' . htmlspecialchars($itemAmountDisplay) . '</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#22374f;font-size:14px;line-height:1.55;text-align:right;white-space:nowrap;">0.00</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#22374f;font-size:14px;line-height:1.55;text-align:center;white-space:nowrap;">Tax on Sales</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#22374f;font-size:14px;line-height:1.55;text-align:right;white-space:nowrap;">' . htmlspecialchars($itemAmountDisplay) . '</td>'
             . '</tr>';
     }
 
     if ($emailItemsHtml === '') {
         $emailItemsHtml = '<tr>'
-            . '<td style="padding:14px 0;border-bottom:1px solid #e5edf6;color:#667085;font-size:15px;line-height:1.55;">No billing item added.</td>'
-            . '<td style="padding:14px 0 14px 16px;border-bottom:1px solid #e5edf6;color:#22374f;font-size:15px;line-height:1.55;text-align:right;white-space:nowrap;">0.00</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#667085;font-size:14px;line-height:1.55;">No billing item added.</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#22374f;font-size:14px;line-height:1.55;text-align:center;white-space:nowrap;">1.00</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#22374f;font-size:14px;line-height:1.55;text-align:right;white-space:nowrap;">0.00</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#22374f;font-size:14px;line-height:1.55;text-align:right;white-space:nowrap;">0.00</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#22374f;font-size:14px;line-height:1.55;text-align:center;white-space:nowrap;">Tax on Sales</td>'
+            . '<td style="padding:14px 10px;border-bottom:1px solid #e5e7eb;color:#22374f;font-size:14px;line-height:1.55;text-align:right;white-space:nowrap;">0.00</td>'
             . '</tr>';
     }
 
+    $paymentDetailsHtml = '';
+    foreach ($paymentDetailBlocks as $detail) {
+        $paymentDetailsHtml .= '<tr>'
+            . '<td style="padding:0 0 18px;">'
+            . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">'
+            . '<tr><td style="padding:0 0 6px;font-size:16px;line-height:1.35;font-weight:700;color:#1f2937;">' . htmlspecialchars((string)$detail['branch']) . '</td></tr>'
+            . '<tr><td style="padding:0;font-size:13px;line-height:1.55;color:#344054;">Account Name: ' . htmlspecialchars((string)$detail['account_name']) . '</td></tr>'
+            . '<tr><td style="padding:0;font-size:13px;line-height:1.55;color:#344054;">Bank: ' . htmlspecialchars((string)$detail['bank']) . '</td></tr>'
+            . '<tr><td style="padding:0;font-size:13px;line-height:1.55;color:#344054;">Account No.: ' . htmlspecialchars((string)$detail['account_number']) . '</td></tr>'
+            . '</table>'
+            . '</td>'
+            . '</tr>';
+    }
+
+    $paymentNoteHtml = '';
+    if ($paymentNote !== '') {
+        $paymentNoteHtml = '
+                        <tr>
+                            <td style="padding:28px 0 0;">
+                                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                                    <tr>
+                                        <td style="padding:14px 16px;border:1px solid #e5e7eb;background-color:#f8fafc;">
+                                            <div style="font-size:13px;line-height:1.45;font-weight:700;color:#1f2937;">Payment Note</div>
+                                            <div style="padding-top:6px;font-size:13px;line-height:1.55;color:#344054;">' . htmlspecialchars($paymentNote) . '</div>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </td>
+                        </tr>';
+    }
+
     $subject = 'SMARTENROLL Tuition Invoice ' . $receiptNo . ' - ' . ($student['student_id'] ?? '');
-    $html = '
+    $summaryHtml = '
     <html>
-    <body style="margin:0;padding:0;background:#ffffff;font-family:Arial,sans-serif;color:#22374f;">
-        <div style="max-width:920px;margin:0 auto;padding:36px 40px 48px;">
-            <div style="text-align:center;">
-                ' . $logoMarkup . '
-                <div style="margin-top:14px;font-size:30px;line-height:1.2;font-weight:600;color:#22374f;">Adreo Montessori Inc.</div>
-                <div style="margin-top:18px;font-size:56px;line-height:1;font-weight:700;color:#22374f;">&#8369;' . htmlspecialchars($invoiceAmountDisplay) . ' <span style="font-size:20px;font-weight:600;color:#344054;">PHP</span></div>
-                <div style="margin-top:16px;font-size:18px;font-weight:700;color:#22374f;">Due ' . htmlspecialchars($dueDateDisplay) . '</div>
-                <div style="margin-top:8px;font-size:16px;color:#475467;">Invoice #: ' . htmlspecialchars($receiptNo) . '</div>
-                <div style="margin-top:28px;">
-                    <a href="' . htmlspecialchars($viewLink) . '" style="display:block;width:100%;box-sizing:border-box;padding:18px 24px;border-radius:0;background:linear-gradient(135deg,#2d9cf0,#3b82f6);color:#ffffff;text-decoration:none;font-size:18px;font-weight:700;">View Invoice</a>
-                </div>
-            </div>
-
-            <div style="margin-top:34px;color:#41566d;font-size:16px;line-height:1.8;">
-                <p style="margin:0 0 18px;">Hi,</p>
-                <p style="margin:0 0 18px;">Here&apos;s invoice <strong style="color:#22374f;">' . htmlspecialchars($receiptNo) . '</strong> for <strong style="color:#22374f;">' . htmlspecialchars(format_money($invoiceAmount)) . '</strong>.</p>
-                <p style="margin:0 0 18px;">The amount outstanding of <strong style="color:#22374f;">' . htmlspecialchars(format_money($invoiceAmount)) . '</strong> is due on <strong style="color:#22374f;">' . htmlspecialchars($dueDateDisplay) . '</strong>.</p>
-                <p style="margin:0 0 18px;">View your bill online: <a href="' . htmlspecialchars($viewLink) . '" style="color:#2d7ff9;text-decoration:underline;word-break:break-all;">' . htmlspecialchars($viewLink) . '</a></p>
-                <p style="margin:0 0 18px;">From your online bill you can print a PDF, export a CSV, or create a free login and view your outstanding bills.</p>
-                <p style="margin:0 0 18px;">If you have any questions, please let us know.</p>
-                <p style="margin:0;">Thanks,<br>Adreo Montessori Inc.</p>
-            </div>
-
-            <table style="width:100%;border-collapse:collapse;margin-top:40px;">
-                <thead>
-                    <tr>
-                        <th style="padding:0 0 12px;text-align:left;border-bottom:1px solid #d6e2f1;color:#41566d;font-size:13px;letter-spacing:0.08em;text-transform:uppercase;">Description</th>
-                        <th style="padding:0 0 12px 16px;text-align:right;border-bottom:1px solid #d6e2f1;color:#41566d;font-size:13px;letter-spacing:0.08em;text-transform:uppercase;">Amount</th>
-                    </tr>
-                </thead>
-                <tbody>' . $emailItemsHtml . '</tbody>
-            </table>
-        </div>
+    <body style="margin:0;padding:0;background-color:#ffffff;font-family:Arial,sans-serif;color:#22374f;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;background-color:#ffffff;">
+            <tr>
+                <td align="center" style="padding:20px 16px 28px;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:760px;border-collapse:collapse;background-color:#ffffff;">
+                        <tr>
+                            <td align="center" style="padding:0 0 18px;">
+                                ' . $logoSummaryMarkup . '
+                                <div style="padding-top:14px;font-size:22px;line-height:1.3;font-weight:400;color:#22374f;">Adreo Montessori Inc.</div>
+                                <div style="padding-top:16px;font-size:54px;line-height:1;font-weight:700;color:#22374f;">' . htmlspecialchars($invoiceAmountDisplay) . ' <span style="font-size:18px;font-weight:600;color:#475467;">PHP</span></div>
+                                <div style="padding-top:16px;font-size:16px;line-height:1.4;font-weight:700;color:#22374f;">Due ' . htmlspecialchars($dueDateDisplay) . '</div>
+                                <div style="padding-top:6px;font-size:15px;line-height:1.4;color:#475467;">Invoice #: ' . htmlspecialchars($receiptNo) . '</div>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="padding:0 20px 18px;">
+                                <table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                                    <tr>
+                                        <td align="center" bgcolor="#3b82f6" style="background-color:#3b82f6;">
+                                            <a href="' . htmlspecialchars($viewLink) . '" style="display:block;padding:16px 24px;font-size:16px;line-height:1.3;font-weight:700;color:#ffffff;text-decoration:none;">View Invoice</a>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="padding:0 20px 22px;">
+                                <div style="font-size:15px;line-height:1.8;color:#41566d;">
+                                    <p style="margin:0 0 14px;">Hi,</p>
+                                    <p style="margin:0 0 14px;">Here&apos;s invoice <strong style="color:#22374f;">' . htmlspecialchars($receiptNo) . '</strong> for <strong style="color:#22374f;">' . htmlspecialchars(format_money($invoiceAmount)) . '</strong>.</p>
+                                    <p style="margin:0 0 14px;">The amount outstanding of <strong style="color:#22374f;">' . htmlspecialchars(format_money($invoiceAmount)) . '</strong> is due on <strong style="color:#22374f;">' . htmlspecialchars($dueDateDisplay) . '</strong>.</p>
+                                    <p style="margin:0 0 14px;">View your bill online: <a href="' . htmlspecialchars($viewLink) . '" style="color:#1d4ed8;text-decoration:underline;word-break:break-word;">' . htmlspecialchars($viewLink) . '</a></p>
+                                    <p style="margin:0 0 14px;">From your online bill you can print a PDF, export a CSV, or create a free login and view your outstanding bills.</p>
+                                    <p style="margin:0 0 14px;">If you have any questions, please let us know.</p>
+                                    <p style="margin:0;">Thanks,<br>Adreo Montessori Inc.</p>
+                                </div>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="padding:0 20px;">
+                                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                                    <thead>
+                                        <tr>
+                                            <th style="padding:0 0 12px;text-align:left;border-top:1px solid #d8e1ef;color:#344054;font-size:12px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;">Description</th>
+                                            <th style="padding:0 0 12px;text-align:right;border-top:1px solid #d8e1ef;color:#344054;font-size:12px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;">Amount</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>' . $summaryEmailItemsHtml . '</tbody>
+                                </table>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
     </body>
     </html>';
 
-    $text = implode("\r\n", [
+    $invoiceHtml = '
+    <html>
+    <body style="margin:0;padding:0;background-color:#ffffff;font-family:Arial,sans-serif;color:#22374f;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;background-color:#ffffff;">
+            <tr>
+                <td align="center" style="padding:24px 20px;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:980px;border-collapse:collapse;background-color:#ffffff;">
+                        <tr>
+                            <td style="padding:0;">
+                                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                                    <tr>
+                                        <td valign="top" style="width:52%;padding:0 28px 36px 0;">
+                                            <div style="font-size:56px;line-height:1;font-weight:300;letter-spacing:0.04em;color:#1f2937;">INVOICE</div>
+                                            <div style="height:24px;line-height:24px;font-size:0;">&nbsp;</div>
+                                            <div style="font-size:18px;line-height:1.5;font-weight:400;color:#22374f;">' . htmlspecialchars($studentName) . '</div>
+                                            <div style="height:8px;line-height:8px;font-size:0;">&nbsp;</div>
+                                            <div style="font-size:14px;line-height:1.7;color:#667085;">Student ID: ' . htmlspecialchars($studentId !== '' ? $studentId : 'N/A') . '</div>
+                                            <div style="font-size:14px;line-height:1.7;color:#667085;">Grade Level: ' . htmlspecialchars($gradeLevel !== '' ? $gradeLevel : 'N/A') . '</div>
+                                        </td>
+                                        <td valign="top" style="width:48%;padding:0 0 36px;">
+                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                                                <tr>
+                                                    <td valign="top" style="width:42%;padding:0 18px 0 0;">
+                                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                                                            <tr>
+                                                                <td style="padding:0 0 14px;">
+                                                                    <div style="font-size:14px;line-height:1.35;font-weight:700;color:#1f2937;">Invoice Date</div>
+                                                                    <div style="padding-top:2px;font-size:14px;line-height:1.45;color:#1f2937;">' . htmlspecialchars($invoiceDateDisplay) . '</div>
+                                                                </td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding:0 0 14px;">
+                                                                    <div style="font-size:14px;line-height:1.35;font-weight:700;color:#1f2937;">Invoice Number</div>
+                                                                    <div style="padding-top:2px;font-size:14px;line-height:1.45;color:#1f2937;">' . htmlspecialchars($receiptNo) . '</div>
+                                                                </td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding:0;">
+                                                                    <div style="font-size:14px;line-height:1.35;font-weight:700;color:#1f2937;">Reference</div>
+                                                                    <div style="padding-top:2px;font-size:14px;line-height:1.45;color:#1f2937;">' . nl2br(htmlspecialchars($referenceDisplay)) . '</div>
+                                                                </td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                    <td valign="top" style="width:58%;padding:0;">
+                                                        <table role="presentation" align="right" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
+                                                            <tr>
+                                                                <td align="right" style="padding:0 0 8px;">' . $logoInvoiceMarkup . '</td>
+                                                            </tr>
+                                                            ' . $schoolAddressHtml . '
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td colspan="2" style="padding:0;">
+                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                                                <thead>
+                                                    <tr>
+                                                        <th style="padding:0 10px 12px 0;text-align:left;border-bottom:1px solid #1f2937;color:#344054;font-size:13px;font-weight:400;">Description</th>
+                                                        <th style="padding:0 10px 12px;text-align:center;border-bottom:1px solid #1f2937;color:#344054;font-size:13px;font-weight:400;">Quantity</th>
+                                                        <th style="padding:0 10px 12px;text-align:right;border-bottom:1px solid #1f2937;color:#344054;font-size:13px;font-weight:400;">Unit Price</th>
+                                                        <th style="padding:0 10px 12px;text-align:right;border-bottom:1px solid #1f2937;color:#344054;font-size:13px;font-weight:400;">Discount</th>
+                                                        <th style="padding:0 10px 12px;text-align:center;border-bottom:1px solid #1f2937;color:#344054;font-size:13px;font-weight:400;">Tax</th>
+                                                        <th style="padding:0 0 12px 10px;text-align:right;border-bottom:1px solid #1f2937;color:#344054;font-size:13px;font-weight:400;">Amount PHP</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>' . $emailItemsHtml . '</tbody>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td colspan="2" style="padding:14px 0 0;">
+                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                                                <tr>
+                                                    <td style="width:64%;">&nbsp;</td>
+                                                    <td style="width:36%;padding:0;">
+                                                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                                                            <tr>
+                                                                <td style="padding:0 0 12px;font-size:14px;line-height:1.45;color:#475467;text-align:right;">Subtotal</td>
+                                                                <td style="padding:0 0 12px 18px;font-size:14px;line-height:1.45;color:#22374f;text-align:right;white-space:nowrap;">' . htmlspecialchars($invoiceAmountDisplay) . '</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding:12px 0 12px;border-top:1px solid #1f2937;font-size:13px;line-height:1.45;font-weight:700;color:#1f2937;text-align:right;">TOTAL PHP</td>
+                                                                <td style="padding:12px 0 12px 18px;border-top:1px solid #1f2937;font-size:14px;line-height:1.45;color:#22374f;text-align:right;white-space:nowrap;">' . htmlspecialchars($cumulativePaidDisplay) . '</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding:0 0 12px;font-size:13px;line-height:1.45;font-weight:700;color:#1f2937;text-align:right;">Less Amount Paid</td>
+                                                                <td style="padding:0 0 12px 18px;font-size:14px;line-height:1.45;color:#22374f;text-align:right;white-space:nowrap;">' . htmlspecialchars($invoiceAmountDisplay) . '</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="padding:12px 0 0;border-top:1px solid #1f2937;font-size:18px;line-height:1.45;font-weight:700;color:#1f2937;text-align:right;">AMOUNT DUE PHP</td>
+                                                                <td style="padding:12px 0 0 18px;border-top:1px solid #1f2937;font-size:18px;line-height:1.45;font-weight:700;color:#1f2937;text-align:right;white-space:nowrap;">' . htmlspecialchars($remainingBalanceDisplay) . '</td>
+                                                            </tr>
+                                                        </table>
+                                                    </td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>'
+                                    . $paymentNoteHtml . '
+                                    <tr>
+                                        <td colspan="2" style="padding:52px 0 0;">
+                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                                                <tr>
+                                                    <td style="padding:0 0 10px;font-size:18px;line-height:1.45;font-weight:700;color:#1f2937;">Due Date: ' . htmlspecialchars($dueDateDisplay) . '</td>
+                                                </tr>
+                                                <tr>
+                                                    <td style="padding:0 0 14px;font-size:16px;line-height:1.45;color:#344054;">Payment Details:</td>
+                                                </tr>
+                                                ' . $paymentDetailsHtml . '
+                                                <tr>
+                                                    <td style="padding:6px 0 0;font-size:13px;line-height:1.55;color:#344054;word-break:break-word;">
+                                                        View online: <a href="' . htmlspecialchars($viewLink) . '" style="color:#1d4ed8;text-decoration:underline;">' . htmlspecialchars($viewLink) . '</a>
+                                                    </td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td colspan="2" style="padding:28px 0 0;">
+                                            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                                                <tr>
+                                                    <td style="padding-top:12px;border-top:1px solid #d8dde6;font-size:12px;line-height:1.5;color:#475467;text-align:center;">' . htmlspecialchars($registeredOfficeLine) . '</td>
+                                                </tr>
+                                            </table>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>';
+
+    $html = $emailLayout === 'invoice' ? $invoiceHtml : $summaryHtml;
+
+    $summaryText = implode("\r\n", [
         'Tuition Invoice',
         '',
         'Adreo Montessori Inc.',
@@ -603,12 +938,6 @@ function send_receipt_email(array $student, array $payment): bool
         'Here\'s invoice ' . $receiptNo . ' for ' . format_money($invoiceAmount) . '.',
         'The amount outstanding of ' . format_money($invoiceAmount) . ' is due on ' . $dueDateDisplay . '.',
         '',
-        'Student ID: ' . ($student['student_id'] ?? ''),
-        'Student Name: ' . $studentName,
-        'Invoice Number: ' . $receiptNo,
-        'Total Breakdown: ' . format_money((float)($payment['amount_paid'] ?? 0)),
-        'Remaining Balance: ' . format_money($remainingBalance),
-        '',
         'Description / Amount:',
         render_receipt_items_text($items),
         '',
@@ -617,6 +946,38 @@ function send_receipt_email(array $student, array $payment): bool
         'Thanks,',
         'Adreo Montessori Inc.',
     ]);
+
+    $invoiceText = implode("\r\n", [
+        'Tuition Invoice',
+        '',
+        'Adreo Montessori Inc.',
+        'Invoice #: ' . $receiptNo,
+        'Reference: ' . $referenceDisplay,
+        'Due Date: ' . $dueDateDisplay,
+        'Invoice Amount: ' . format_money($invoiceAmount),
+        'Amount Due: ' . format_money($remainingBalance),
+        'View Invoice: ' . $viewLink,
+        '',
+        'Student ID: ' . ($student['student_id'] ?? ''),
+        'Student Name: ' . $studentName,
+        'Grade Level: ' . ($gradeLevel !== '' ? $gradeLevel : 'N/A'),
+        'Invoice Date: ' . $invoiceDateDisplay,
+        'Total Breakdown: ' . format_money($invoiceAmount),
+        'Total Paid: ' . format_money($cumulativePaid),
+        'Remaining Balance: ' . format_money($remainingBalance),
+        '',
+        'Description / Amount:',
+        render_receipt_items_text($items),
+        '',
+        'Payment Details:',
+        'ADREO XEVERA - BPI - 0121-0022-01',
+        'ADREO ANGELES - Security Bank - 0000073919401',
+        'ADREO CAMACHILES - PNB - 203570004892',
+        '',
+        get_registered_office_line(),
+    ]);
+
+    $text = $emailLayout === 'invoice' ? $invoiceText : $summaryText;
 
     return smtp_send_mail($to, $subject, $html, $text, $lastEmailError, $embeddedImages);
 }
@@ -832,7 +1193,7 @@ try {
                     'email_sent' => 0,
                 ];
 
-                $sent = send_receipt_email($selectedStudent, $previewPayment);
+                $sent = send_receipt_email($selectedStudent, $previewPayment, 'summary');
                 if ($sent) {
                     write_audit_log($conn, $currentUser, 'tuition_invoice_preview_emailed', 'tuition_invoice_preview', $receiptNo, [
                         'student_id' => (string)$selectedStudent['student_id'],
@@ -935,7 +1296,7 @@ try {
                 throw new RuntimeException('This student does not have a valid email saved in the enrollment form.');
             }
 
-            $sent = send_receipt_email($selectedStudent, $payment);
+            $sent = send_receipt_email($selectedStudent, $payment, 'invoice');
             if (!$sent) {
                 throw new RuntimeException($lastEmailError ?: 'The invoice email could not be sent from this server.');
             }
@@ -986,6 +1347,84 @@ try {
         }
     }
     $historyStmt->close();
+
+    $gmailHistoryActionPreview = 'tuition_invoice_preview_emailed';
+    $gmailHistoryActionInvoice = 'tuition_receipt_emailed';
+    $gmailHistoryStudentPattern = '%"student_id":"' . (string)$selectedStudent['student_id'] . '"%';
+    $gmailHistoryStmt = $conn->prepare(
+        "SELECT
+            al.id,
+            al.action,
+            al.entity_id,
+            al.details_json,
+            al.created_at,
+            tp.id AS linked_payment_id,
+            tp.receipt_no AS linked_receipt_no,
+            tp.amount_paid AS linked_amount_paid,
+            tp.payment_items AS linked_payment_items
+         FROM audit_logs al
+         LEFT JOIN tuition_payments tp
+           ON al.action = 'tuition_receipt_emailed'
+          AND tp.id = CAST(al.entity_id AS UNSIGNED)
+         WHERE al.action IN (?, ?)
+           AND al.details_json LIKE ?
+         ORDER BY al.created_at DESC, al.id DESC"
+    );
+    $gmailHistoryStmt->bind_param('sss', $gmailHistoryActionPreview, $gmailHistoryActionInvoice, $gmailHistoryStudentPattern);
+    $gmailHistoryStmt->execute();
+    $gmailHistoryResult = $gmailHistoryStmt->get_result();
+
+    while ($gmailHistoryRow = $gmailHistoryResult->fetch_assoc()) {
+        $gmailHistoryDetails = json_decode((string)($gmailHistoryRow['details_json'] ?? ''), true);
+        if (!is_array($gmailHistoryDetails)) {
+            $gmailHistoryDetails = [];
+        }
+
+        $gmailHistoryAction = (string)($gmailHistoryRow['action'] ?? '');
+        $gmailHistoryInvoiceNo = 'N/A';
+        $gmailHistoryAmount = 0.0;
+        $gmailHistoryItems = 'N/A';
+        $gmailHistoryLink = '';
+
+        if ($gmailHistoryAction === $gmailHistoryActionPreview) {
+            $gmailHistoryInvoiceNo = trim((string)($gmailHistoryRow['entity_id'] ?? '')) ?: 'N/A';
+            $gmailHistoryAmount = round((float)($gmailHistoryDetails['amount'] ?? 0), 2);
+            $gmailHistoryItems = build_invoice_item_list(
+                $selectedStudent,
+                is_array($gmailHistoryDetails['items'] ?? null) ? $gmailHistoryDetails['items'] : [],
+                'No billing item added yet'
+            );
+            $gmailHistoryLink = 'tuition_receipt_details.php?student_id=' . urlencode((string)$selectedStudent['student_id']) . '#receipt-email-preview';
+        } else {
+            $linkedPaymentId = (int)($gmailHistoryRow['linked_payment_id'] ?? 0);
+            if ($linkedPaymentId > 0) {
+                $gmailHistoryInvoiceNo = trim((string)($gmailHistoryRow['linked_receipt_no'] ?? '')) ?: 'N/A';
+                $gmailHistoryAmount = round((float)($gmailHistoryRow['linked_amount_paid'] ?? 0), 2);
+                $gmailHistoryItems = build_invoice_item_list(
+                    $selectedStudent,
+                    decode_saved_payment_items(
+                        (string)($gmailHistoryRow['linked_payment_items'] ?? ''),
+                        (float)($gmailHistoryRow['linked_amount_paid'] ?? 0)
+                    )
+                );
+                $gmailHistoryLink = 'tuition_receipt_details.php?student_id=' . urlencode((string)$selectedStudent['student_id']) . '&payment_id=' . $linkedPaymentId . '#receipt-preview';
+            } else {
+                $gmailHistoryInvoiceNo = 'Saved Invoice';
+                $gmailHistoryItems = 'Saved invoice';
+            }
+        }
+
+        $gmailSendHistory[] = [
+            'sent_at' => (string)($gmailHistoryRow['created_at'] ?? ''),
+            'type' => $gmailHistoryAction === $gmailHistoryActionPreview ? 'Preview Email' : 'Invoice Email',
+            'invoice_no' => $gmailHistoryInvoiceNo,
+            'payment_items' => $gmailHistoryItems,
+            'amount' => $gmailHistoryAmount,
+            'email' => trim((string)($gmailHistoryDetails['email'] ?? '')) ?: 'N/A',
+            'link' => $gmailHistoryLink,
+        ];
+    }
+    $gmailHistoryStmt->close();
 } catch (Throwable $e) {
     $error = $e->getMessage();
 }
@@ -1083,35 +1522,8 @@ $tuitionSaveIdempotencyKey = smartenroll_issue_one_time_token('tuition_save_paym
 $emailConfig = get_email_config();
 $configuredAppUrl = trim((string)($emailConfig['app_url'] ?? ''));
 $uploadLinkNeedsRealHost = $configuredAppUrl === '' || is_loopback_host((string)parse_url($configuredAppUrl, PHP_URL_HOST));
-$schoolAddressLines = [
-    'Adreo Montessori Inc.',
-    'Bldg. 42-43 Great Mall of',
-    'Central Luzon, Brgy. Tabun',
-    'Xevera',
-    'MABALACAT CITY',
-    'PAMPANGA 2010',
-    'PHILIPPINES',
-];
-$paymentDetailBlocks = [
-    [
-        'branch' => 'ADREO XEVERA',
-        'account_name' => 'ADREO MONTESSORI INCORPORATED',
-        'bank' => 'Bank of the Philippine Islands (BPI)',
-        'account_number' => '0121-0022-01',
-    ],
-    [
-        'branch' => 'ADREO ANGELES',
-        'account_name' => 'ADREO LEARNING HUB',
-        'bank' => 'Security Bank',
-        'account_number' => '0000073919401',
-    ],
-    [
-        'branch' => 'ADREO CAMACHILES',
-        'account_name' => 'ADREO MONTESSORI INCORPORATED',
-        'bank' => 'Philippine National Bank (PNB)',
-        'account_number' => '203570004892',
-    ],
-];
+$schoolAddressLines = get_school_address_lines();
+$paymentDetailBlocks = get_payment_detail_blocks();
 $suggestedInvoiceNumber = '';
 $selectedReceiptNo = '';
 $selectedPaymentItems = [];
@@ -1121,7 +1533,7 @@ $selectedPaymentAmount = 0.0;
 $selectedPaymentDateDisplay = 'N/A';
 $selectedPaymentNote = '';
 $selectedPaymentDueDateDisplay = 'N/A';
-$registeredOfficeLine = 'Registered Office: Bldg. 42-43 Great Mall of Central Luzon, Brgy. Tabun Xevera, Mabalacat City, Pampanga, 2010, Philippines.';
+$registeredOfficeLine = get_registered_office_line();
 
 if ($selectedStudent && $selectedPayment) {
     $selectedReceiptNo = trim((string)($selectedPayment['receipt_no'] ?? '')) !== '' ? (string)$selectedPayment['receipt_no'] : 'N/A';
@@ -1228,7 +1640,7 @@ if (isset($conn) && $conn instanceof mysqli) {
                 </button>
                 <button type="button" class="primary-btn" id="invoiceEmailSendTrigger" <?php echo filter_var($studentEmail, FILTER_VALIDATE_EMAIL) ? '' : 'disabled'; ?>>
                     <i class="fa-solid fa-paper-plane"></i>
-                    Send to Gmail
+                    Send Preview to Gmail
                 </button>
             </div>
             <div class="invoice-email-shell">
@@ -1297,6 +1709,65 @@ if (isset($conn) && $conn instanceof mysqli) {
                         </div>
                     </div>
                 </div>
+            </div>
+        </section>
+
+        <section class="card-block history-block gmail-history-block" id="gmail-send-history">
+            <div class="block-head">
+                <div>
+                    <span class="eyebrow eyebrow-blue">Gmail Send History</span>
+                    <h3>Sent Email History</h3>
+                    <p>This is a separate history for preview emails and invoice emails already sent to Gmail.</p>
+                </div>
+            </div>
+
+            <div class="student-table-wrap">
+                <table class="student-table history-table">
+                    <thead>
+                        <tr>
+                            <th>Sent</th>
+                            <th>Type</th>
+                            <th>Invoice</th>
+                            <th>Payment Items</th>
+                            <th>Amount</th>
+                            <th>Recipient</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php if (empty($gmailSendHistory)): ?>
+                            <tr>
+                                <td colspan="6">No Gmail send history yet.</td>
+                            </tr>
+                        <?php else: ?>
+                            <?php foreach ($gmailSendHistory as $gmailHistory): ?>
+                                <tr>
+                                    <td>
+                                        <?php if ($gmailHistory['link'] !== ''): ?>
+                                            <a class="history-link" href="<?php echo htmlspecialchars($gmailHistory['link']); ?>">
+                                                <?php echo htmlspecialchars(format_history_timestamp((string)$gmailHistory['sent_at'])); ?>
+                                            </a>
+                                        <?php else: ?>
+                                            <?php echo htmlspecialchars(format_history_timestamp((string)$gmailHistory['sent_at'])); ?>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?php echo htmlspecialchars((string)$gmailHistory['type']); ?></td>
+                                    <td>
+                                        <?php if ($gmailHistory['link'] !== ''): ?>
+                                            <a class="history-link" href="<?php echo htmlspecialchars($gmailHistory['link']); ?>">
+                                                <?php echo htmlspecialchars((string)$gmailHistory['invoice_no']); ?>
+                                            </a>
+                                        <?php else: ?>
+                                            <?php echo htmlspecialchars((string)$gmailHistory['invoice_no']); ?>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?php echo htmlspecialchars((string)$gmailHistory['payment_items']); ?></td>
+                                    <td><?php echo htmlspecialchars(format_money((float)$gmailHistory['amount'])); ?></td>
+                                    <td><?php echo htmlspecialchars((string)$gmailHistory['email']); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
             </div>
         </section>
 
@@ -1489,7 +1960,7 @@ if (isset($conn) && $conn instanceof mysqli) {
                                                 <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($tuitionReceiptCsrfToken); ?>">
                                                 <input type="hidden" name="payment_id" value="<?php echo (int)$history['id']; ?>">
                                                 <button type="submit" class="table-send-btn" <?php echo filter_var($studentEmail, FILTER_VALIDATE_EMAIL) ? '' : 'disabled'; ?>>
-                                                    Send
+                                                    Send Invoice
                                                 </button>
                                             </form>
                                         </td>
@@ -1526,7 +1997,7 @@ if (isset($conn) && $conn instanceof mysqli) {
                                 <input type="hidden" name="payment_id" value="<?php echo (int)$selectedPayment['id']; ?>">
                                 <button type="submit" class="primary-btn" <?php echo filter_var($studentEmail, FILTER_VALIDATE_EMAIL) ? '' : 'disabled'; ?>>
                                     <i class="fa-solid fa-paper-plane"></i>
-                                    Send to Gmail
+                                    Send Invoice to Gmail
                                 </button>
                             </form>
                         </div>
