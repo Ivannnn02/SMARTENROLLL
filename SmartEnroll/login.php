@@ -1,6 +1,6 @@
 <?php
 declare(strict_types=1);
-aasdaaafw
+
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/mail/PHPMailer/mail_helper.php';
 
